@@ -405,25 +405,37 @@ struct pool_line {
 
 static void init_global_wearleveling(struct conv_ftl *conv_ftl)
 {
+	int i;
+	int j;
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
 	printk(KERN_INFO "1st\n");
 	pm.lines = vmalloc(sizeof(struct pool_line) * (spp->tt_lines));
 	pm.GC_TH = 2;
 	printk(KERN_INFO "2nd\n");
 	pm.tt_lines = spp->tt_lines;
-	int i;
 
 	for (i = 0; i < (pm.tt_lines) / 2; i++) {
 		pm.lines[i] = (struct pool_line){
 			.id = i, .hot_cold_pool = 0, .total_erase_cnt=0, .nr_recent_erase_cnt = 0,
 		};
 	}
-	int j;
+
+	g_max_ec_in_hot_pool = &pm.lines[0];
+	g_max_rec_in_hot_pool = &pm.lines[1];
+	g_min_ec_in_hot_pool = &pm.lines[2];
+	g_min_rec_in_cold_pool = &pm.lines[3];
+
 	for (j = (pm.tt_lines / 2); j < (pm.tt_lines); j++) {
 		pm.lines[j] = (struct pool_line){
 			.id = j, .hot_cold_pool = 1, .total_erase_cnt=0, .nr_recent_erase_cnt = 0,
 		};
 	}
+
+	g_max_ec_in_cold_pool = &pm.lines[j-1];
+	g_max_rec_in_cold_pool = &pm.lines[j-2];
+	g_min_ec_in_cold_pool = &pm.lines[j-3];
+	g_min_rec_in_cold_pool = &pm.lines[j-4];
+
 	printk(KERN_INFO "3rd\n");
 	
 }
@@ -684,6 +696,7 @@ static uint64_t dual_pool_gc_write_page(struct conv_ftl *conv_ftl, struct ppa *o
 }
 
 static void inc_ers_cnt(struct ppa *ppa) {
+	printk(KERN_INFO "****hj****inc_ers_cnt****\n");
 	pm.lines[ppa->g.blk].total_erase_cnt++;
 	pm.lines[ppa->g.blk].nr_recent_erase_cnt++;
 }
@@ -1222,7 +1235,7 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 			}
 		}
 	}
-
+	printk(KERN_INFO "*******hj****DO_GC*******\n");
 	/* update line status */
 	mark_line_free(conv_ftl, &ppa);
 	inc_ers_cnt(&ppa);
