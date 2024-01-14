@@ -408,6 +408,7 @@ static void init_global_wearleveling(struct conv_ftl *conv_ftl)
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
 	printk(KERN_INFO "1st\n");
 	pm.lines = vmalloc(sizeof(struct pool_line) * (spp->tt_lines));
+	pm.GC_TH = 2;
 	printk(KERN_INFO "2nd\n");
 	pm.tt_lines = spp->tt_lines;
 	int i;
