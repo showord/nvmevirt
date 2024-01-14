@@ -403,8 +403,9 @@ struct pool_line {
 static void init_global_wearleveling(struct conv_ftl *conv_ftl)
 {
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
+	printk(KERN_INFO "1st\n");
 	pm.lines = vmalloc(sizeof(struct pool_line) * (spp->tt_lines));
-
+	printk(KERN_INFO "2nd\n");
 	pm.tt_lines = spp->tt_lines;
 	int i;
 
@@ -419,6 +420,8 @@ static void init_global_wearleveling(struct conv_ftl *conv_ftl)
 			.id = j, .hot_cold_pool = 1, .total_erase_cnt=0, .nr_recent_erase_cnt = 0,
 		};
 	}
+	printk(KERN_INFO "3rd\n");
+	
 }
 
 static bool check_cold_data_migration(void)
