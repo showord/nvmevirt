@@ -6,6 +6,15 @@
 #include "nvmev.h"
 #include "conv_ftl.h"
 
+struct pool_line *g_max_ec_in_hot_pool; //Hot Pool 에서 가장 삭제 많이 된 블록
+struct pool_line *g_min_ec_in_hot_pool; //Hot Pool 에서 가장 삭제 덜 된 블록
+struct pool_line *g_max_rec_in_hot_pool; //Hot Pool 에 이동한 후 가장 삭제 많이 된 블록
+struct pool_line *g_min_rec_in_hot_pool; //Hot Pool 에 이동한 후 가장 삭제 덜 된 블록
+struct pool_line *g_max_ec_in_cold_pool; //Cold pool 에서 가장 삭제 많이 된 블록
+struct pool_line *g_min_ec_in_cold_pool; //Cold pool 에서 가장 삭제 덜 된 블록
+struct pool_line *g_max_rec_in_cold_pool; //Cold Pool 에 이동한 후 가장 삭제 많이 된 블록
+struct pool_line *g_min_rec_in_cold_pool; //Cold Pool 에 이동한 후 가장 삭제 덜 된 블록
+
 void schedule_internal_operation(int sqid, unsigned long long nsecs_target,
 				 struct buffer *write_buffer, unsigned int buffs_to_release);
 
@@ -41,8 +50,8 @@ static uint64_t ppa2pgidx(struct conv_ftl *conv_ftl, struct ppa *ppa)
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
 	uint64_t pgidx;
 
-	NVMEV_DEBUG_VERBOSE("%s: ch:%d, lun:%d, pl:%d, blk:%d, pg:%d\n", __func__,
-			ppa->g.ch, ppa->g.lun, ppa->g.pl, ppa->g.blk, ppa->g.pg);
+	NVMEV_DEBUG_VERBOSE("%s: ch:%d, lun:%d, pl:%d, blk:%d, pg:%d\n", __func__, ppa->g.ch,
+			    ppa->g.lun, ppa->g.pl, ppa->g.blk, ppa->g.pg);
 
 	pgidx = ppa->g.ch * spp->pgs_per_ch + ppa->g.lun * spp->pgs_per_lun +
 		ppa->g.pl * spp->pgs_per_pl + ppa->g.blk * spp->pgs_per_blk + ppa->g.pg;
@@ -220,8 +229,8 @@ static void advance_write_pointer(struct conv_ftl *conv_ftl, uint32_t io_type)
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct write_pointer *wpp = __get_wp(conv_ftl, io_type);
 
-	NVMEV_DEBUG_VERBOSE("current wpp: ch:%d, lun:%d, pl:%d, blk:%d, pg:%d\n",
-			wpp->ch, wpp->lun, wpp->pl, wpp->blk, wpp->pg);
+	NVMEV_DEBUG_VERBOSE("current wpp: ch:%d, lun:%d, pl:%d, blk:%d, pg:%d\n", wpp->ch, wpp->lun,
+			    wpp->pl, wpp->blk, wpp->pg);
 
 	check_addr(wpp->pg, spp->pgs_per_blk);
 	wpp->pg++;
@@ -279,7 +288,7 @@ static void advance_write_pointer(struct conv_ftl *conv_ftl, uint32_t io_type)
 	NVMEV_ASSERT(wpp->pl == 0);
 out:
 	NVMEV_DEBUG_VERBOSE("advanced wpp: ch:%d, lun:%d, pl:%d, blk:%d, pg:%d (curline %d)\n",
-			wpp->ch, wpp->lun, wpp->pl, wpp->blk, wpp->pg, wpp->curline->id);
+			    wpp->ch, wpp->lun, wpp->pl, wpp->blk, wpp->pg, wpp->curline->id);
 }
 
 static struct ppa get_new_page(struct conv_ftl *conv_ftl, uint32_t io_type)
@@ -375,6 +384,411 @@ static void conv_init_params(struct convparams *cpp)
 	cpp->pba_pcent = (int)((1 + cpp->op_area_pcent) * 100);
 }
 
+struct pool_mgmt {
+	struct pool_line *lines;
+	uint32_t tt_lines;
+	int GC_TH;
+};
+
+struct pool_line {
+	uint32_t id;
+	uint32_t hot_cold_pool;
+	uint32_t total_erase_cnt;
+	uint32_t nr_recent_erase_cnt;
+};
+
+
+static void init_global_wearleveling(struct conv_ftl *conv_ftl)
+{
+	struct ssdparams *spp = &conv_ftl->ssd->sp;
+	struct pool_mgmt *pm;
+	pm->lines = kmalloc(sizeof(struct pool_line) * (spp->tt_lines),GFP_KERNEL);
+
+
+	pm->tt_lines = spp->tt_lines;
+	int i;
+
+	for (i = 0; i < (pm->tt_lines) / 2; i++) {
+		pm->lines[i] = (struct pool_line){
+			.id = i, .hot_cold_pool = 0, .total_erase_cnt=0, .nr_recent_erase_cnt = 0,
+		};
+	}
+	int j;
+	for (j = (pm->tt_lines / 2); j < (pm->tt_lines); j++) {
+		pm->lines[j] = (struct pool_line){
+			.id = j, .hot_cold_pool = 1, .total_erase_cnt=0, .nr_recent_erase_cnt = 0,
+		};
+	}
+}
+
+static bool check_cold_data_migration(void)
+{
+	struct pool_mgmt pm;
+	if ((g_max_ec_in_hot_pool->total_erase_cnt - g_min_ec_in_cold_pool->total_erase_cnt) > pm.GC_TH) {
+		return true;
+	} else {
+		return false;
+	}
+}
+static bool check_hot_pool_adjustment(void)
+{
+	struct pool_mgmt pm;
+	if ((g_max_ec_in_hot_pool->total_erase_cnt - g_min_ec_in_hot_pool->total_erase_cnt) > (2 * (pm.GC_TH))) {
+		return true;
+	} else {
+		return false;
+	}
+}
+
+static bool check_cold_pool_adjustment(void)
+{
+	struct pool_mgmt pm;
+	if ((g_max_rec_in_cold_pool->nr_recent_erase_cnt - g_min_rec_in_hot_pool->nr_recent_erase_cnt) > pm.GC_TH) {
+		return true;
+	} else {
+		return false;
+	}
+}
+
+static void dual_pool_copyback(struct conv_ftl *conv_ftl, struct ppa ppa , struct ppa ppa_old , int dual_pool_copy);
+static void dual_pool_clean_one_flashpg(struct conv_ftl *conv_ftl, struct ppa *ppa, struct ppa ppa_old ,int dual_pool_copy);
+static uint64_t dual_pool_gc_write_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa, struct ppa ppa_dual, int dual_pool_copy);
+static void inc_ers_cnt(struct ppa *ppa);
+static void mark_line_free(struct conv_ftl *conv_ftl, struct ppa *ppa);
+static void mark_block_free(struct conv_ftl *conv_ftl, struct ppa *ppa);
+static inline bool valid_lpn(struct conv_ftl *conv_ftl, uint64_t lpn);
+static void mark_page_valid(struct conv_ftl *conv_ftl, struct ppa *ppa);
+
+/* 
+1. HOT POOL 에서 가장 삭제가 많이 된 블록(oldest block)의 valid data migration
+2. oldest block erase
+3. Cold pool 에서 가장 삭제가 덜 된 블록에서(youngest block) valid한 data 를 oldest block으로 복사
+4. youngest block 삭제
+5. oldest block & youngest block pool 변경 & oldest block EEC reset
+6. pool status update
+*/
+static void cold_pool_migration(struct conv_ftl *conv_ftl)
+{
+	struct line_mgmt *lm;
+	struct line *victim_line = NULL;
+	struct ppa ppa;
+	struct ppa ppa_old;
+	struct pool_mgmt pm;
+
+
+	victim_line = &lm->lines[g_max_ec_in_hot_pool->id];
+	ppa.g.blk = victim_line->id;
+	conv_ftl->wfc.credits_to_refill = victim_line->ipc;
+
+	/* 1. hot pool valid data migration */
+	dual_pool_copyback(conv_ftl,ppa,ppa,0);
+	/* 2. oldest block erase */
+	mark_line_free(conv_ftl, &ppa);
+	inc_ers_cnt(&ppa);
+
+	ppa_old = ppa;
+	victim_line = &lm->lines[g_min_ec_in_cold_pool->id];
+	ppa.g.blk = victim_line->id;
+
+	conv_ftl->wfc.credits_to_refill = victim_line->ipc;
+
+	/* 3. cold pool youngest block valid data -> hot pool oldest block (erased) */
+	dual_pool_copyback(conv_ftl,ppa,ppa_old,1);
+	/* 4. youngest block erase */
+	mark_line_free(conv_ftl, &ppa);
+	inc_ers_cnt(&ppa);
+	/* 5. oldest block & yougesst block pool switch */
+	g_max_ec_in_hot_pool->hot_cold_pool = 1;
+	g_min_ec_in_cold_pool->hot_cold_pool = 0;
+	g_max_ec_in_hot_pool->nr_recent_erase_cnt = 0;
+	/* 6. pool state update */
+	int i;
+	int cold_min_rec = INT_MAX;
+	int cold_min_ec = INT_MAX;
+	int cold_max_ec = -1;
+	int hot_min_ec = INT_MAX;
+	int hot_min_rec = INT_MAX;
+	int hot_max_rec = -1;
+
+
+	for (i = 0; i < pm.tt_lines; i++) {
+		if(pm.lines[i].hot_cold_pool == 1) {
+			// min rec in cold pool
+			if( cold_min_rec > pm.lines[i].nr_recent_erase_cnt ) {
+				g_min_rec_in_cold_pool = &pm.lines[i];
+				cold_min_rec = pm.lines[i].nr_recent_erase_cnt;
+			}
+			// max ec in cold pool
+			if(pm.lines[i].total_erase_cnt > cold_max_ec) {
+				g_max_ec_in_cold_pool = &pm.lines[i];
+				cold_max_ec = pm.lines[i].total_erase_cnt;
+			}
+			// min ec in cold pool
+			if (cold_min_ec > pm.lines[i].total_erase_cnt ) {
+				g_min_ec_in_cold_pool = &pm.lines[i];
+				cold_min_ec = pm.lines[i].total_erase_cnt;
+			}
+		} else if(pm.lines[i].hot_cold_pool == 0) {
+			// max rec in hot pool
+			if(pm.lines[i].nr_recent_erase_cnt > hot_max_rec) {
+				g_max_rec_in_hot_pool = &pm.lines[i];
+				hot_max_rec = pm.lines[i].nr_recent_erase_cnt;
+			}
+			// min rec in hot pool
+			if(hot_min_rec > pm.lines[i].nr_recent_erase_cnt) {
+				g_min_rec_in_hot_pool = &pm.lines[i];
+				hot_min_rec = pm.lines[i].nr_recent_erase_cnt;
+			}
+			// min ec in hot pool
+			if (hot_min_ec > pm.lines[i].total_erase_cnt ) {
+				g_min_ec_in_hot_pool = &pm.lines[i];
+				hot_min_ec = pm.lines[i].total_erase_cnt;
+			}
+		}
+	}
+
+}
+
+static void dual_pool_copyback(struct conv_ftl *conv_ftl, struct ppa ppa , struct ppa ppa_old , int dual_pool_copy) {
+	/* copy back valid data */
+	int flashpg;
+	struct ssdparams *spp = &conv_ftl->ssd->sp;
+
+	for (flashpg = 0; flashpg < spp->flashpgs_per_blk; flashpg++) {
+		int ch, lun;
+
+		ppa.g.pg = flashpg * spp->pgs_per_flashpg;
+		for (ch = 0; ch < spp->nchs; ch++) {
+			for (lun = 0; lun < spp->luns_per_ch; lun++) {
+				struct nand_lun *lunp;
+				ppa.g.ch = ch;
+				ppa.g.lun = lun;
+				ppa.g.pl = 0;
+				lunp = get_lun(conv_ftl->ssd, &ppa);
+				dual_pool_clean_one_flashpg(conv_ftl, &ppa, ppa_old, dual_pool_copy);
+
+				if (flashpg == (spp->flashpgs_per_blk - 1)) {
+					struct convparams *cpp = &conv_ftl->cp;
+
+					mark_block_free(conv_ftl, &ppa);
+
+					if (cpp->enable_gc_delay) {
+						struct nand_cmd gce = {
+							.type = GC_IO,
+							.cmd = NAND_ERASE,
+							.stime = 0,
+							.interleave_pci_dma = false,
+							.ppa = &ppa,
+						};
+						ssd_advance_nand(conv_ftl->ssd, &gce);
+					}
+					lunp->gc_endtime = lunp->next_lun_avail_time;
+				}
+			}
+		}
+	}
+}
+
+/* here ppa identifies the block we want to clean */
+static void dual_pool_clean_one_flashpg(struct conv_ftl *conv_ftl, struct ppa *ppa, struct ppa ppa_old ,int dual_pool_copy)
+{
+	struct ssdparams *spp = &conv_ftl->ssd->sp;
+	struct convparams *cpp = &conv_ftl->cp;
+	struct nand_page *pg_iter = NULL;
+	int cnt = 0, i = 0;
+	uint64_t completed_time = 0;
+	struct ppa ppa_copy = *ppa;
+
+	for (i = 0; i < spp->pgs_per_flashpg; i++) {
+		pg_iter = get_pg(conv_ftl->ssd, &ppa_copy);
+		/* there shouldn't be any free page in victim blocks */
+		if (dual_pool_copy == 0) NVMEV_ASSERT(pg_iter->status != PG_FREE);
+		if (pg_iter->status == PG_VALID)
+			cnt++;
+
+		ppa_copy.g.pg++;
+	}
+
+	ppa_copy = *ppa;
+
+	if (cnt <= 0)
+		return;
+
+	if (cpp->enable_gc_delay) {
+		struct nand_cmd gcr = {
+			.type = GC_IO,
+			.cmd = NAND_READ,
+			.stime = 0,
+			.xfer_size = spp->pgsz * cnt,
+			.interleave_pci_dma = false,
+			.ppa = &ppa_copy,
+		};
+		completed_time = ssd_advance_nand(conv_ftl->ssd, &gcr);
+	}
+
+	for (i = 0; i < spp->pgs_per_flashpg; i++) {
+		pg_iter = get_pg(conv_ftl->ssd, &ppa_copy);
+
+		/* there shouldn't be any free page in victim blocks */
+		if (pg_iter->status == PG_VALID) {
+			/* delay the maptbl update until "write" happens */
+			dual_pool_gc_write_page(conv_ftl, &ppa_copy, ppa_old ,dual_pool_copy);
+		}
+
+		ppa_copy.g.pg++;
+	}
+}
+
+static uint64_t dual_pool_gc_write_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa, struct ppa ppa_dual, int dual_pool_copy)
+{
+	struct ssdparams *spp = &conv_ftl->ssd->sp;
+	struct convparams *cpp = &conv_ftl->cp;
+	struct ppa new_ppa;
+	uint64_t lpn = get_rmap_ent(conv_ftl, old_ppa);
+
+	NVMEV_ASSERT(valid_lpn(conv_ftl, lpn));
+	if (dual_pool_copy == 0) { 
+		new_ppa = get_new_page(conv_ftl, GC_IO);
+	} else {
+		new_ppa = ppa_dual;
+	}
+	/* update maptbl */
+	set_maptbl_ent(conv_ftl, lpn, &new_ppa);
+	/* update rmap */
+	set_rmap_ent(conv_ftl, lpn, &new_ppa);
+
+	mark_page_valid(conv_ftl, &new_ppa);
+
+	/* need to advance the write pointer here */
+	advance_write_pointer(conv_ftl, GC_IO);
+
+	if (cpp->enable_gc_delay) {
+		struct nand_cmd gcw = {
+			.type = GC_IO,
+			.cmd = NAND_NOP,
+			.stime = 0,
+			.interleave_pci_dma = false,
+			.ppa = &new_ppa,
+		};
+		if (last_pg_in_wordline(conv_ftl, &new_ppa)) {
+			gcw.cmd = NAND_WRITE;
+			gcw.xfer_size = spp->pgsz * spp->pgs_per_oneshotpg;
+		}
+
+		ssd_advance_nand(conv_ftl->ssd, &gcw);
+	}
+	return 0;
+}
+
+static void inc_ers_cnt(struct ppa *ppa) {
+	struct pool_mgmt pm;
+	pm.lines[ppa->g.blk].total_erase_cnt++;
+	pm.lines[ppa->g.blk].nr_recent_erase_cnt++;
+}
+
+/* 
+1. Cold pool 내에서 가장 큰 EEC를 갖는 블록을 Hot Pool로 이동
+2. Hot pool로 이동후 Cold pool과 Hot pool의 상태를 갱신 (Cold pool에서 oldest block 이었다던지..)
+ */
+
+static void cold_pool_adjustment(void)
+{
+	struct pool_mgmt pm;
+	g_max_rec_in_cold_pool->hot_cold_pool = 0;
+	int i;
+
+	if (g_max_rec_in_cold_pool->nr_recent_erase_cnt >
+	    g_max_rec_in_hot_pool->nr_recent_erase_cnt) {
+		g_max_rec_in_hot_pool = g_max_rec_in_cold_pool;
+	}
+
+	if (g_max_rec_in_cold_pool->total_erase_cnt >
+	    g_max_ec_in_hot_pool->total_erase_cnt) {
+		g_max_ec_in_hot_pool = g_max_rec_in_cold_pool;
+	}
+
+	if (g_max_rec_in_cold_pool->total_erase_cnt <
+	    g_min_ec_in_hot_pool->total_erase_cnt) {
+		g_min_ec_in_hot_pool = g_max_rec_in_cold_pool;
+	}
+
+	int max_rec = -1;
+	int max_ec = -1;
+	int min_ec = INT_MAX;
+
+	for (i = 0; i < pm.tt_lines; i++) {
+		if(pm.lines[i].hot_cold_pool == 1) {
+			// max rec in cold pool
+			if(pm.lines[i].nr_recent_erase_cnt > max_rec) {
+				g_max_rec_in_cold_pool = &pm.lines[i];
+				max_rec = pm.lines[i].nr_recent_erase_cnt;
+			}
+			// max ec in cold pool
+			if(pm.lines[i].total_erase_cnt > max_ec) {
+				g_max_ec_in_cold_pool = &pm.lines[i];
+				max_ec = pm.lines[i].total_erase_cnt;
+			}
+			// min ec in cold pool
+			if (min_ec > pm.lines[i].total_erase_cnt ) {
+				g_min_ec_in_cold_pool = &pm.lines[i];
+				min_ec = pm.lines[i].total_erase_cnt;
+			}
+		}
+	}
+}
+
+/* 
+1. Hot pool 에서 가장 삭제 수가 작은 블록을 Cold pool 로 이동
+2. 이동후 Cold pool과 Hot pool의 상태를 갱신
+ */
+static void hot_pool_adjustment(void)
+{
+	struct pool_mgmt pm;
+	g_min_ec_in_hot_pool->hot_cold_pool = 1;
+	int i;
+
+	if (g_min_ec_in_hot_pool->total_erase_cnt >
+	    g_max_ec_in_cold_pool->total_erase_cnt) {
+		g_max_ec_in_cold_pool = g_min_ec_in_hot_pool;
+	}
+
+	if (g_min_ec_in_hot_pool->nr_recent_erase_cnt <
+	    g_min_rec_in_cold_pool->nr_recent_erase_cnt) {
+		g_min_rec_in_cold_pool = g_min_ec_in_hot_pool;
+	}
+
+	if (g_min_ec_in_hot_pool->nr_recent_erase_cnt >
+	    g_max_rec_in_cold_pool->nr_recent_erase_cnt) {
+		g_max_rec_in_cold_pool = g_min_ec_in_hot_pool;
+	}
+
+	int hot_min_ec = INT_MAX;
+	int hot_min_rec = INT_MAX;
+	int hot_max_rec = -1;
+
+	 
+	for (i = 0; i < pm.tt_lines; i++) {
+		if(pm.lines[i].hot_cold_pool == 0) {
+			// min ec in hot pool
+			if(hot_min_ec > pm.lines[i].total_erase_cnt) {
+				g_min_ec_in_hot_pool = &pm.lines[i];
+				hot_min_ec = pm.lines[i].total_erase_cnt;
+			}
+			// min rec in hot pool
+			if(hot_min_rec > pm.lines[i].nr_recent_erase_cnt) {
+				g_min_rec_in_hot_pool = &pm.lines[i];
+				hot_min_rec = pm.lines[i].nr_recent_erase_cnt;
+			}
+			// max rec in hot pool
+			if(pm.lines[i].nr_recent_erase_cnt > hot_max_rec) {
+				g_max_rec_in_hot_pool = &pm.lines[i];
+				hot_max_rec = pm.lines[i].nr_recent_erase_cnt;
+			}
+		}
+		
+	}
+}
+
 void conv_init_namespace(struct nvmev_ns *ns, uint32_t id, uint64_t size, void *mapped_addr,
 			 uint32_t cpu_nr_dispatcher)
 {
@@ -387,6 +801,7 @@ void conv_init_namespace(struct nvmev_ns *ns, uint32_t id, uint64_t size, void *
 
 	ssd_init_params(&spp, size, nr_parts);
 	conv_init_params(&cpp);
+	init_global_wearleveling(conv_ftls); // hjkim
 
 	conv_ftls = kmalloc(sizeof(struct conv_ftl) * nr_parts, GFP_KERNEL);
 
@@ -606,6 +1021,7 @@ static uint64_t gc_write_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa)
 
 	NVMEV_ASSERT(valid_lpn(conv_ftl, lpn));
 	new_ppa = get_new_page(conv_ftl, GC_IO);
+
 	/* update maptbl */
 	set_maptbl_ent(conv_ftl, lpn, &new_ppa);
 	/* update rmap */
@@ -766,8 +1182,8 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 
 	ppa.g.blk = victim_line->id;
 	NVMEV_DEBUG_VERBOSE("GC-ing line:%d,ipc=%d(%d),victim=%d,full=%d,free=%d\n", ppa.g.blk,
-		    victim_line->ipc, victim_line->vpc, conv_ftl->lm.victim_line_cnt,
-		    conv_ftl->lm.full_line_cnt, conv_ftl->lm.free_line_cnt);
+			    victim_line->ipc, victim_line->vpc, conv_ftl->lm.victim_line_cnt,
+			    conv_ftl->lm.full_line_cnt, conv_ftl->lm.free_line_cnt);
 
 	conv_ftl->wfc.credits_to_refill = victim_line->ipc;
 
@@ -810,6 +1226,17 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 
 	/* update line status */
 	mark_line_free(conv_ftl, &ppa);
+	inc_ers_cnt(&ppa);
+	/*여기다가 dual pool wear leveling call*/
+	if (check_cold_data_migration()) {
+		cold_pool_migration(conv_ftl);
+	}
+	if (check_cold_pool_adjustment()) {
+		cold_pool_adjustment();
+	}
+	if (check_hot_pool_adjustment()) {
+		hot_pool_adjustment();
+	}
 
 	return 0;
 }
@@ -859,7 +1286,8 @@ static bool conv_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 	};
 
 	NVMEV_ASSERT(conv_ftls);
-	NVMEV_DEBUG_VERBOSE("%s: start_lpn=%lld, len=%lld, end_lpn=%lld", __func__, start_lpn, nr_lba, end_lpn);
+	NVMEV_DEBUG_VERBOSE("%s: start_lpn=%lld, len=%lld, end_lpn=%lld", __func__, start_lpn,
+			    nr_lba, end_lpn);
 	if ((end_lpn / nr_parts) >= spp->tt_pgs) {
 		NVMEV_ERROR("%s: lpn passed FTL range (start_lpn=%lld > tt_pgs=%ld)\n", __func__,
 			    start_lpn, spp->tt_pgs);
@@ -885,10 +1313,11 @@ static bool conv_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 			local_lpn = lpn / nr_parts;
 			cur_ppa = get_maptbl_ent(conv_ftl, local_lpn);
 			if (!mapped_ppa(&cur_ppa) || !valid_ppa(conv_ftl, &cur_ppa)) {
-				NVMEV_DEBUG_VERBOSE("lpn 0x%llx not mapped to valid ppa\n", local_lpn);
+				NVMEV_DEBUG_VERBOSE("lpn 0x%llx not mapped to valid ppa\n",
+						    local_lpn);
 				NVMEV_DEBUG_VERBOSE("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d\n",
-					    cur_ppa.g.ch, cur_ppa.g.lun, cur_ppa.g.blk,
-					    cur_ppa.g.pl, cur_ppa.g.pg);
+						    cur_ppa.g.ch, cur_ppa.g.lun, cur_ppa.g.blk,
+						    cur_ppa.g.pl, cur_ppa.g.pg);
 				continue;
 			}
 
