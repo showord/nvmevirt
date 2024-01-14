@@ -703,6 +703,7 @@ static uint64_t dual_pool_gc_write_page(struct conv_ftl *conv_ftl, struct ppa *o
 
 static void inc_ers_cnt(struct ppa *ppa) {
 	printk(KERN_INFO "****hj****inc_ers_cnt****\n");
+	printk(KERN_INFO "Variable value: %d\n", ppa->g.blk);
 	pm.lines[ppa->g.blk].total_erase_cnt++;
 	pm.lines[ppa->g.blk].nr_recent_erase_cnt++;
 }
