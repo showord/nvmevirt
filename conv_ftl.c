@@ -403,7 +403,7 @@ struct pool_line {
 static void init_global_wearleveling(struct conv_ftl *conv_ftl)
 {
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
-	pm.lines = kmalloc(sizeof(struct pool_line) * (spp->tt_lines),GFP_KERNEL);
+	pm.lines = vmalloc(sizeof(struct pool_line) * (spp->tt_lines));
 
 	pm.tt_lines = spp->tt_lines;
 	int i;
