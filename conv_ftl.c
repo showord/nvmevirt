@@ -360,7 +360,7 @@ static void conv_init_ftl(struct conv_ftl *conv_ftl, struct convparams *cpp, str
 
 	/* initialize all the lines */
 	init_lines(conv_ftl);
-
+ 
 	/* initialize write pointer, this is how we allocate new pages for writes */
 	prepare_write_pointer(conv_ftl, USER_IO);
 	prepare_write_pointer(conv_ftl, GC_IO);
@@ -496,8 +496,10 @@ static void cold_pool_migration(struct conv_ftl *conv_ftl)
 	conv_ftl->wfc.credits_to_refill = victim_line->ipc;
 
 	/* 1. hot pool valid data migration */
+	printk(KERN_INFO "*******hj****dual_pool_copyback*******\n");
 	dual_pool_copyback(conv_ftl,ppa,ppa,0);
 	/* 2. oldest block erase */
+	printk(KERN_INFO "*******hj****mark_line_free*******\n");
 	mark_line_free(conv_ftl, &ppa);
 	inc_ers_cnt(&ppa);
 
@@ -508,6 +510,7 @@ static void cold_pool_migration(struct conv_ftl *conv_ftl)
 	conv_ftl->wfc.credits_to_refill = victim_line->ipc;
 
 	/* 3. cold pool youngest block valid data -> hot pool oldest block (erased) */
+	printk(KERN_INFO "*******hj****dual_pool_copyback__1*******\n");
 	dual_pool_copyback(conv_ftl,ppa,ppa_old,1);
 	/* 4. youngest block erase */
 	mark_line_free(conv_ftl, &ppa);
@@ -580,6 +583,7 @@ static void dual_pool_copyback(struct conv_ftl *conv_ftl, struct ppa ppa , struc
 				ppa.g.lun = lun;
 				ppa.g.pl = 0;
 				lunp = get_lun(conv_ftl->ssd, &ppa);
+				printk(KERN_INFO "*******hj****dual_pool_clean_one_flashpg*******\n");
 				dual_pool_clean_one_flashpg(conv_ftl, &ppa, ppa_old, dual_pool_copy);
 
 				if (flashpg == (spp->flashpgs_per_blk - 1)) {
@@ -647,6 +651,7 @@ static void dual_pool_clean_one_flashpg(struct conv_ftl *conv_ftl, struct ppa *p
 		/* there shouldn't be any free page in victim blocks */
 		if (pg_iter->status == PG_VALID) {
 			/* delay the maptbl update until "write" happens */
+			printk(KERN_INFO "*******hj****dual_pool_gc_write_page*******\n");
 			dual_pool_gc_write_page(conv_ftl, &ppa_copy, ppa_old ,dual_pool_copy);
 		}
 
@@ -662,6 +667,7 @@ static uint64_t dual_pool_gc_write_page(struct conv_ftl *conv_ftl, struct ppa *o
 	uint64_t lpn = get_rmap_ent(conv_ftl, old_ppa);
 
 	NVMEV_ASSERT(valid_lpn(conv_ftl, lpn));
+	printk(KERN_INFO "*******hj****get_new_page*******\n");
 	if (dual_pool_copy == 0) { 
 		new_ppa = get_new_page(conv_ftl, GC_IO);
 	} else {
@@ -1241,12 +1247,15 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 	inc_ers_cnt(&ppa);
 	/*여기다가 dual pool wear leveling call*/
 	if (check_cold_data_migration()) {
+		printk(KERN_INFO "*******hj****cold_pool_migration*******\n");
 		cold_pool_migration(conv_ftl);
 	}
 	if (check_cold_pool_adjustment()) {
+		printk(KERN_INFO "*******hj****cold_pool_adjustment*******\n");
 		cold_pool_adjustment();
 	}
 	if (check_hot_pool_adjustment()) {
+		printk(KERN_INFO "*******hj****hot_pool_adjustment*******\n");
 		hot_pool_adjustment();
 	}
 
