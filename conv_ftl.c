@@ -410,7 +410,7 @@ static void init_global_wearleveling(struct conv_ftl *conv_ftl)
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
 	printk(KERN_INFO "1st\n");
 	pm.lines = vmalloc(sizeof(struct pool_line) * (spp->tt_lines));
-	pm.GC_TH = 2;
+	pm.GC_TH = 4;
 	printk(KERN_INFO "2nd\n");
 	pm.tt_lines = spp->tt_lines;
 
@@ -1245,7 +1245,9 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 	printk(KERN_INFO "*******hj****DO_GC*******\n");
 	/* update line status */
 	mark_line_free(conv_ftl, &ppa);
-	inc_ers_cnt(&ppa);
+	pm.lines[victim_line->id].total_erase_cnt++;
+	printk(KERN_INFO "*******hj****VICTIM_LINE*******\n");
+	//inc_ers_cnt(&ppa);
 	/*여기다가 dual pool wear leveling call*/
 	if (check_cold_data_migration()) {
 		printk(KERN_INFO "*******hj****cold_pool_migration*******\n");
