@@ -403,20 +403,21 @@ struct pool_line {
 static void init_global_wearleveling(struct conv_ftl *conv_ftl)
 {
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
+	struct pool_mgmt *pm = &pm;
 	printk(KERN_INFO "1st\n");
-	pm.lines = vmalloc(sizeof(struct pool_line) * (spp->tt_lines));
+	pm->lines = vmalloc(sizeof(struct pool_line) * (spp->tt_lines));
 	printk(KERN_INFO "2nd\n");
-	pm.tt_lines = spp->tt_lines;
+	pm->tt_lines = spp->tt_lines;
 	int i;
 
-	for (i = 0; i < (pm.tt_lines) / 2; i++) {
-		pm.lines[i] = (struct pool_line){
+	for (i = 0; i < (pm->tt_lines) / 2; i++) {
+		pm->lines[i] = (struct pool_line){
 			.id = i, .hot_cold_pool = 0, .total_erase_cnt=0, .nr_recent_erase_cnt = 0,
 		};
 	}
 	int j;
-	for (j = (pm.tt_lines / 2); j < (pm.tt_lines); j++) {
-		pm.lines[j] = (struct pool_line){
+	for (j = (pm->tt_lines / 2); j < (pm->tt_lines); j++) {
+		pm->lines[j] = (struct pool_line){
 			.id = j, .hot_cold_pool = 1, .total_erase_cnt=0, .nr_recent_erase_cnt = 0,
 		};
 	}
