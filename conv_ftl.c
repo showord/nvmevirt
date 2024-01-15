@@ -17,6 +17,19 @@ struct pool_line *g_min_rec_in_cold_pool; //Cold Pool 에 이동한 후 가장 �
 
 struct pool_mgmt pm;
 
+struct pool_mgmt {
+	struct pool_line *lines;
+	uint32_t tt_lines;
+	int GC_TH;
+};
+
+struct pool_line {
+	uint32_t id;
+	uint32_t hot_cold_pool;
+	uint32_t total_erase_cnt;
+	uint32_t nr_recent_erase_cnt;
+};
+
 void schedule_internal_operation(int sqid, unsigned long long nsecs_target,
 				 struct buffer *write_buffer, unsigned int buffs_to_release);
 
@@ -165,6 +178,11 @@ static void remove_lines(struct conv_ftl *conv_ftl)
 {
 	pqueue_free(conv_ftl->lm.victim_line_pq);
 	vfree(conv_ftl->lm.lines);
+}
+
+static void remove_plins(struct conv_ftl *conv_ftl)
+{
+	vfree(pm.lines);
 }
 
 static void init_write_flow_control(struct conv_ftl *conv_ftl)
@@ -378,6 +396,7 @@ static void conv_remove_ftl(struct conv_ftl *conv_ftl)
 	remove_lines(conv_ftl);
 	remove_rmap(conv_ftl);
 	remove_maptbl(conv_ftl);
+	remove_plins(conv_ftl);
 }
 
 static void conv_init_params(struct convparams *cpp)
@@ -389,35 +408,23 @@ static void conv_init_params(struct convparams *cpp)
 	cpp->pba_pcent = (int)((1 + cpp->op_area_pcent) * 100);
 }
 
-struct pool_mgmt {
-	struct pool_line *lines;
-	uint32_t tt_lines;
-	int GC_TH;
-};
-
-struct pool_line {
-	uint32_t id;
-	uint32_t hot_cold_pool;
-	uint32_t total_erase_cnt;
-	uint32_t nr_recent_erase_cnt;
-};
-
 
 static void init_global_wearleveling(struct conv_ftl *conv_ftl)
 {
-	int i;
-	int j;
 	struct pool_mgmt *pm_tmp = &pm;
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
+	int i;
+	int j;
 	printk(KERN_INFO "1st\n");
 	pm.lines = vmalloc(sizeof(struct pool_line) * (spp->tt_lines));
-	pm_tmp = (struct pool_mgmt *)vmalloc(sizeof(struct pool_mgmt));
+	//memset(pm.lines, 0, sizeof(struct pool_line) * (spp->tt_lines));
+	//pm_tmp = (struct pool_mgmt *)vmalloc(sizeof(struct pool_mgmt));
 
 	pm.GC_TH = 4;
 	printk(KERN_INFO "2nd\n");
 	pm.tt_lines = spp->tt_lines;
 
-	for (i = 0; i < (pm.tt_lines) / 2; i++) {
+	for (i = 0; i < (pm.tt_lines/2); i++) {
 		pm.lines[i] = (struct pool_line){
 			.id = i, .hot_cold_pool = 0, .total_erase_cnt=0, .nr_recent_erase_cnt = 0,
 		};
@@ -492,6 +499,13 @@ static void cold_pool_migration(struct conv_ftl *conv_ftl)
 	struct line *victim_line = NULL;
 	struct ppa ppa;
 	struct ppa ppa_old;
+	int i;
+	int cold_min_rec = INT_MAX;
+	int cold_min_ec = INT_MAX;
+	int cold_max_ec = -1;
+	int hot_min_ec = INT_MAX;
+	int hot_min_rec = INT_MAX;
+	int hot_max_rec = -1;
 
 
 	victim_line = &lm->lines[g_max_ec_in_hot_pool->id];
@@ -523,14 +537,6 @@ static void cold_pool_migration(struct conv_ftl *conv_ftl)
 	g_min_ec_in_cold_pool->hot_cold_pool = 0;
 	g_max_ec_in_hot_pool->nr_recent_erase_cnt = 0;
 	/* 6. pool state update */
-	int i;
-	int cold_min_rec = INT_MAX;
-	int cold_min_ec = INT_MAX;
-	int cold_max_ec = -1;
-	int hot_min_ec = INT_MAX;
-	int hot_min_rec = INT_MAX;
-	int hot_max_rec = -1;
-
 
 	for (i = 0; i < pm.tt_lines; i++) {
 		if(pm.lines[i].hot_cold_pool == 1) {
@@ -718,8 +724,11 @@ static void inc_ers_cnt(struct ppa *ppa) {
 
 static void cold_pool_adjustment(void)
 {
-	g_max_rec_in_cold_pool->hot_cold_pool = 0;
 	int i;
+	int max_rec = -1;
+	int max_ec = -1;
+	int min_ec = INT_MAX;
+	g_max_rec_in_cold_pool->hot_cold_pool = 0;
 
 	if (g_max_rec_in_cold_pool->nr_recent_erase_cnt >
 	    g_max_rec_in_hot_pool->nr_recent_erase_cnt) {
@@ -735,10 +744,6 @@ static void cold_pool_adjustment(void)
 	    g_min_ec_in_hot_pool->total_erase_cnt) {
 		g_min_ec_in_hot_pool = g_max_rec_in_cold_pool;
 	}
-
-	int max_rec = -1;
-	int max_ec = -1;
-	int min_ec = INT_MAX;
 
 	for (i = 0; i < pm.tt_lines; i++) {
 		if(pm.lines[i].hot_cold_pool == 1) {
@@ -767,8 +772,11 @@ static void cold_pool_adjustment(void)
  */
 static void hot_pool_adjustment(void)
 {
-	g_min_ec_in_hot_pool->hot_cold_pool = 1;
 	int i;
+	int hot_min_ec = INT_MAX;
+	int hot_min_rec = INT_MAX;
+	int hot_max_rec = -1;
+	g_min_ec_in_hot_pool->hot_cold_pool = 1;
 
 	if (g_min_ec_in_hot_pool->total_erase_cnt >
 	    g_max_ec_in_cold_pool->total_erase_cnt) {
@@ -784,10 +792,6 @@ static void hot_pool_adjustment(void)
 	    g_max_rec_in_cold_pool->nr_recent_erase_cnt) {
 		g_max_rec_in_cold_pool = g_min_ec_in_hot_pool;
 	}
-
-	int hot_min_ec = INT_MAX;
-	int hot_min_rec = INT_MAX;
-	int hot_max_rec = -1;
 
 	 
 	for (i = 0; i < pm.tt_lines; i++) {
@@ -1250,7 +1254,7 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 	mark_line_free(conv_ftl, &ppa);
 	pm.lines[victim_line->id].total_erase_cnt++;
 	printk(KERN_INFO "*******hj****VICTIM_LINE*******\n");
-	inc_ers_cnt(&ppa);
+	//inc_ers_cnt(&ppa);
 	/*여기다가 dual pool wear leveling call*/
 	if (check_cold_data_migration()) {
 		printk(KERN_INFO "*******hj****cold_pool_migration*******\n");
