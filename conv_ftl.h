@@ -55,6 +55,12 @@ struct write_flow_control {
 	uint32_t credits_to_refill;
 };
 
+struct pool_mgmt {
+	struct pool_line *lines;
+	uint32_t tt_lines;
+	int GC_TH;
+};
+
 struct conv_ftl {
 	struct ssd *ssd;
 
@@ -64,6 +70,7 @@ struct conv_ftl {
 	struct write_pointer wp;
 	struct write_pointer gc_wp;
 	struct line_mgmt lm;
+	struct pool_mgmt pm;
 	struct write_flow_control wfc;
 };
 
