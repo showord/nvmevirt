@@ -66,6 +66,7 @@ static void check_params(struct ssdparams *spp)
 void ssd_init_params(struct ssdparams *spp, uint64_t capacity, uint32_t nparts)
 {
 	uint64_t blk_size, total_size;
+	uint64_t cmt_entry;
 
 	spp->secsz = 512;
 	spp->secs_per_pg = 8;
@@ -161,6 +162,13 @@ void ssd_init_params(struct ssdparams *spp, uint64_t capacity, uint32_t nparts)
 	total_size = (unsigned long)spp->tt_luns * spp->blks_per_lun * spp->pgs_per_blk *
 		     spp->secsz * spp->secs_per_pg;
 	blk_size = spp->pgs_per_blk * spp->secsz * spp->secs_per_pg;
+
+    cmt_entry = (FLASH_PAGE_SIZE / ceil((log(spp->tt_blks * BLOCK_SIZE) / log(2)) / 8.0));
+    spp->tt_cmt_entry = 128 * cmt_entry;
+	spp->tt_gtd_entry = (total_size/page_size) / (page_size/4)
+
+//	spp->tt_cmt_entry = KB(512)/64;
+
 	NVMEV_INFO(
 		"Total Capacity(GiB,MiB)=%llu,%llu chs=%u luns=%lu lines=%lu blk-size(MiB,KiB)=%u,%u line-size(MiB,KiB)=%lu,%lu",
 		BYTE_TO_GB(total_size), BYTE_TO_MB(total_size), spp->nchs, spp->tt_luns,

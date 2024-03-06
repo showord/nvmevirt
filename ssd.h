@@ -56,6 +56,9 @@ enum { CELL_TYPE_LSB, CELL_TYPE_MSB, CELL_TYPE_CSB, MAX_CELL_TYPES };
 #define PL_BITS (8)
 #define LUN_BITS (8)
 #define CH_BITS (8)
+#define DIRTY_BIT (1)
+#define CACHED_BIT (1)
+#define TIME_BIT (64)
 #define RSB_BITS (TOTAL_PPA_BITS - (BLK_BITS + PAGE_BITS + PL_BITS + LUN_BITS + CH_BITS))
 
 /* describe a physical page addr */
@@ -67,6 +70,7 @@ struct ppa {
 			uint64_t pl : PL_BITS;
 			uint64_t lun : LUN_BITS;
 			uint64_t ch : CH_BITS;
+			//unit64_t dirt : DIRTY_BIT;
 			uint64_t rsv : RSB_BITS;
 		} g;
 
@@ -78,6 +82,22 @@ struct ppa {
 
 		uint64_t ppa;
 	};
+};
+
+/* describe a cached mapping table */
+struct ppa_dftl {
+	uint64_t lpn : PAGE_BITS; // lpn 16bits
+	uint64_t ppn : PAGE_BITS; // ppn
+	uint64_t pg : PAGE_BITS; // pg == 4KB
+	uint64_t blk : BLK_BITS;
+	uint64_t pl : PL_BITS;
+	uint64_t lun : LUN_BITS;
+	uint64_t ch : CH_BITS;
+	uint32_t dirty : DIRTY_BIT;
+	uint32_t cached : CACHED_BIT;
+	uint64_t modi_time : TIME_BIT;
+
+
 };
 
 typedef int nand_sec_status_t;
@@ -159,6 +179,9 @@ struct ssdparams {
 	int luns_per_ch; /* # of LUNs per channel */
 	int nchs; /* # of channels in the SSD */
 	int cell_mode;
+	int tt_cmt_entry;
+	int tt_gtd_entry;
+	int current_cmt_entry;
 
 	/* Unit size of NVMe write command
        Transfer size should be multiple of it */

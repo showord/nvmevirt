@@ -8,7 +8,8 @@
 #include "nvmev.h"
 #include "dma.h"
 
-#if (SUPPORTED_SSD_TYPE(CONV) || SUPPORTED_SSD_TYPE(ZNS))
+//#if (SUPPORTED_SSD_TYPE(CONV) || SUPPORTED_SSD_TYPE(ZNS))
+#if (SUPPORTED_SSD_TYPE(DFTL) || SUPPORTED_SSD_TYPE(ZNS))
 #include "ssd.h"
 #else
 struct buffer;
@@ -613,7 +614,8 @@ static int nvmev_io_worker(void *data)
 
 			if (w->nsecs_target <= curr_nsecs) {
 				if (w->is_internal) {
-#if (SUPPORTED_SSD_TYPE(CONV) || SUPPORTED_SSD_TYPE(ZNS))
+//#if (SUPPORTED_SSD_TYPE(CONV) || SUPPORTED_SSD_TYPE(ZNS))
+#if (SUPPORTED_SSD_TYPE(DFTL) || SUPPORTED_SSD_TYPE(ZNS))
 					buffer_release((struct buffer *)w->write_buffer,
 						       w->buffs_to_release);
 #endif

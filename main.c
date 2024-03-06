@@ -517,12 +517,14 @@ void NVMEV_NAMESPACE_INIT(struct nvmev_dev *nvmev_vdev)
 
 		if (NS_SSD_TYPE(i) == SSD_TYPE_NVM)
 			simple_init_namespace(&ns[i], i, size, ns_addr, disp_no);
-		else if (NS_SSD_TYPE(i) == SSD_TYPE_CONV)
-			conv_init_namespace(&ns[i], i, size, ns_addr, disp_no);
+		//else if (NS_SSD_TYPE(i) == SSD_TYPE_CONV)
+		//	conv_init_namespace(&ns[i], i, size, ns_addr, disp_no);
 		else if (NS_SSD_TYPE(i) == SSD_TYPE_ZNS)
 			zns_init_namespace(&ns[i], i, size, ns_addr, disp_no);
 		else if (NS_SSD_TYPE(i) == SSD_TYPE_KV)
 			kv_init_namespace(&ns[i], i, size, ns_addr, disp_no);
+		else if (NS_SSD_TYPE(i) == SSD_TYPE_DFTL)
+			dftl_init_namespace(&ns[i], i, size, ns_addr, disp_no);
 		else
 			BUG_ON(1);
 
@@ -545,8 +547,8 @@ void NVMEV_NAMESPACE_FINAL(struct nvmev_dev *nvmev_vdev)
 	for (i = 0; i < nr_ns; i++) {
 		if (NS_SSD_TYPE(i) == SSD_TYPE_NVM)
 			simple_remove_namespace(&ns[i]);
-		else if (NS_SSD_TYPE(i) == SSD_TYPE_CONV)
-			conv_remove_namespace(&ns[i]);
+	//	else if (NS_SSD_TYPE(i) == SSD_TYPE_CONV)
+	//		conv_remove_namespace(&ns[i]);
 		else if (NS_SSD_TYPE(i) == SSD_TYPE_ZNS)
 			zns_remove_namespace(&ns[i]);
 		else if (NS_SSD_TYPE(i) == SSD_TYPE_KV)
