@@ -17,7 +17,8 @@
 #endif
 
 #include "nvmev.h"
-#include "conv_ftl.h"
+//#include "conv_ftl.h"
+#include "dftl.h"
 #include "zns_ftl.h"
 #include "simple_ftl.h"
 #include "kv_ftl.h"

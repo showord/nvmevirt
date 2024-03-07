@@ -179,9 +179,9 @@ struct ssdparams {
 	int luns_per_ch; /* # of LUNs per channel */
 	int nchs; /* # of channels in the SSD */
 	int cell_mode;
-	int tt_cmt_entry;
-	int tt_gtd_entry;
-	int current_cmt_entry;
+	//int tt_cmt_entry;
+	//int tt_gtd_entry;
+	//int current_cmt_entry;
 
 	/* Unit size of NVMe write command
        Transfer size should be multiple of it */

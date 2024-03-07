@@ -88,14 +88,7 @@ struct CMT {
 };
 
 // 해시 함수
-unsigned int hash(const char* key, int table_size) {
-    unsigned int hash = 0;
-    while (*key) {
-        hash = (hash * 31) + *key;
-        key++;
-    }
-    return hash % table_size;
-}
+unsigned int hash(const char* key, int table_size);
 
 
 // GTD를 만들어보자..
@@ -111,30 +104,6 @@ struct PMTEntry {
     int ch;
 };
 
-// GTD 초기화 함수
-void initializeGTD() {
-    for (int i = 0; i < GTD_SIZE; i++) {
-        //GTD[i].pg = -1;
-        //GTD[i].blk = -1;
-		GTD[i].vpn = -1;
-        GTD[i].pl = -1;
-        GTD[i].lun = -1;
-        GTD[i].ch = -1;
-    }
-}
-
-// GTD에 값 삽입 또는 업데이트 함수
-void insertOrUpdateGTD(int Dlpn, struct PMTEntry pmt_entry) {
-	int pmt_index = Dlpn/512;
-	//struct PMTEntry pmt_entry;
-	//pmt_entry.ch = 
-    GTD[Dlpn] = pmt_entry;
-}
-
-// GTD에서 값 조회 함수
-struct PMTEntry searchGTD(int Dlpn) {
-    return GTD[Dlpn];
-}
 
 // hjkim end //
 
@@ -143,8 +112,8 @@ struct dftl {
 	struct ssd *ssd;
 	struct dftlparams cp;
 	struct CMT *cmt;
-	struct ppa *ppa;
-	struct PMTEntry GTD[GTD_SIZE]; /* global translation directory */
+	struct ppa *maptbl;
+	struct PMTEntry *GTD; /* global translation directory */
 	uint64_t *rmap; /* reverse mapptbl, assume it's stored in OOB */
 	//uint64_t *r_cmt; /* reverse cmt */
 	//uint32_t *r_gtd; /* reverse gtdtbl */
@@ -155,7 +124,6 @@ struct dftl {
 	uint64_t c_cmt_tt;
 	uint32_t c_gtd_tt;
 };
-
 
 
 void dftl_init_namespace(struct nvmev_ns *ns, uint32_t id, uint64_t size, void *mapped_addr,

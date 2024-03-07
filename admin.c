@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "nvmev.h"
-#include "conv_ftl.h"
+//#include "conv_ftl.h"
+#include "dftl.h"
 #include "zns_ftl.h"
 
 #define sq_entry(entry_id) \

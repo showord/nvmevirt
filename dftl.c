@@ -51,6 +51,16 @@ struct pool_line {
 	uint32_t nr_recent_erase_cnt;
 };
 
+// 해시 함수
+unsigned int hash(const char* key, int table_size) {
+    unsigned int hash = 0;
+    while (*key) {
+        hash = (hash * 31) + *key;
+        key++;
+    }
+    return hash % table_size;
+}
+
 void schedule_internal_operation(int sqid, unsigned long long nsecs_target,
 				 struct buffer *write_buffer, unsigned int buffs_to_release);
 
@@ -72,13 +82,13 @@ static inline bool should_gc_high(struct dftl *dftl)
 
 static inline struct ppa get_maptbl_ent(struct dftl *dftl, uint64_t lpn)
 {
-	return dftl->ppa[lpn];
+	return dftl->maptbl[lpn];
 }
 
 static inline void set_maptbl_ent(struct dftl *dftl, uint64_t lpn, struct ppa *ppa)
 {
 	NVMEV_ASSERT(lpn < dftl->ssd->sp.tt_pgs);
-	dftl->cmt[lpn] = *ppa;
+	dftl->maptbl[lpn] = *ppa;
 }
 
 static uint64_t ppa2pgidx(struct dftl *dftl, struct ppa *ppa)
@@ -199,10 +209,6 @@ static void remove_lines(struct dftl *dftl)
 	vfree(dftl->lm.lines);
 }
 
-static void remove_plins(struct dftl *dftl)
-{
-	vfree(dftl->pm.lines);
-}
 
 static void init_write_flow_control(struct dftl *dftl)
 {
@@ -242,9 +248,9 @@ static struct write_pointer *__get_wp(struct dftl *ftl, uint32_t io_type)
 		return &ftl->gc_wp;
 	}
 
-	NVMEV_ASSERT(0);
-	return NULL;
-}
+ 	NVMEV_ASSERT(0);
+ 	return NULL;
+ }
 
 static void prepare_write_pointer(struct dftl *dftl, uint32_t io_type)
 {
@@ -351,24 +357,27 @@ static struct ppa get_new_page(struct dftl *dftl, uint32_t io_type)
 	return ppa;
 }
 
+struct CMT* createHashTable(int table_size, int capacity) {
+    struct CMT* ht = (struct CMT*)vmalloc(sizeof(struct CMT));
+    ht->table = (struct Node*)vmalloc(table_size * sizeof(struct Node));
+    ht->size = table_size;
+    ht->capacity = capacity;
+    ht->current_size = 0;
+    ht->current_time = 0;
+    return ht;
+}
+
 static void init_maptbl(struct dftl *dftl)
 {
 	int i;
 	struct ssdparams *spp = &dftl->ssd->sp;
+	struct CMT* cmt;
 
 	int table_size = 512 * 1024 / sizeof(struct Node);
-    struct CMT* cmt = createHashTable(table_size, 100);
+	//printk(KERN_INFO "**hj** init_maptbl?? %d\n", table_size);
+    cmt = createHashTable(table_size, 100);
+	//printk(KERN_INFO "**hj** create_good?? \n");
 
-	// dftl->cmt = vmalloc(sizeof(struct ppa) * spp->tt_cmt_entry);
-	// //dftl->cmt = vmalloc(spp->tt_cmt_entry * 64);
-	// //for (i = 0; i < spp->tt_cmt_entry; i++) {
-	// for (i = 0; i < spp->tt_cmt_entry; i++) {	
-	// 	dftl->cmt[i].ppa = UNMAPPED_PPA;
-	// 	dftl->cmt[i].cached = -1;
-	// 	dftl->cmt[i].dirty = -1;
-	// 	dftl->gtd[i].Mppn = -1;
-	// 	dftl->gtd[i].Mvpn = -1;
-	// }
 }
 
 static void remove_maptbl(struct dftl *dftl)
@@ -381,17 +390,11 @@ static void init_rmap(struct dftl *dftl)
 	int i;
 	struct ssdparams *spp = &dftl->ssd->sp;
 
-	dftl->r_cmt = vmalloc(sizeof(uint64_t) * spp->tt_cmt_entry);
-	dftl->r_gtd = vmalloc(sizeof(uint32_t) * spp->tt_gtd_entry);
-	//dftl->rmap = vmalloc(sizeof(uint64_t) * spp->tt_pgs);
-	for (i = 0; i < spp->tt_cmt_entry; i++) {
-		dftl->r_cmt[i] = INVALID_LPN;
-		//dftl->r_gtd[i] = INVALID_LPN;
+	dftl->rmap = vmalloc(sizeof(uint64_t) * spp->tt_pgs);
+	for (i = 0; i < spp->tt_pgs; i++) {
+		dftl->rmap[i] = INVALID_LPN;
 	}
 
-	for (i = 0; i < spp->tt_gtd_entry; i++) {
-		dftl->r_gtd[i] = INVALID_LPN;
-	}
 }
 
 static void remove_rmap(struct dftl *dftl)
@@ -399,65 +402,23 @@ static void remove_rmap(struct dftl *dftl)
 	vfree(dftl->rmap);
 }
 
-static void init_global_wearleveling(struct dftl *dftl)
-{
-	struct pool_mgmt *pm = &dftl->pm;
-	struct ssdparams *spp = &dftl->ssd->sp;
-	int i;
-	int j;
-	pm->tt_lines = spp->tt_lines;
-	pm->lines = vmalloc(sizeof(struct pool_line) * (spp->tt_lines));
-	//memset(pm.lines, 0, sizeof(struct pool_line) * (spp->tt_lines));
-	//pm_tmp = (struct pool_mgmt *)vmalloc(sizeof(struct pool_mgmt));
-
-	pm->GC_TH = 2;
-
-
-	for (i = 0; i < (pm->tt_lines/2); i++) {
-		pm->lines[i] = (struct pool_line){
-			.id = i, .hot_cold_pool = 0, .total_erase_cnt=0, .nr_recent_erase_cnt = 0,
-		};
-	}
-
-	g_max_ec_in_hot_pool = &pm->lines[0];
-	g_max_rec_in_hot_pool = &pm->lines[1];
-	g_min_ec_in_hot_pool = &pm->lines[2];
-	g_min_rec_in_hot_pool = &pm->lines[3];
-
-	for (j = (pm->tt_lines / 2); j < (pm->tt_lines); j++) {
-		pm->lines[j] = (struct pool_line){
-			.id = j, .hot_cold_pool = 1, .total_erase_cnt=0, .nr_recent_erase_cnt = 0,
-		};
-	}
-
-	g_max_ec_in_cold_pool = &pm->lines[j-1];
-	g_max_rec_in_cold_pool = &pm->lines[j-2];
-	g_min_ec_in_cold_pool = &pm->lines[j-3];
-	g_min_rec_in_cold_pool = &pm->lines[j-4];
-
-}
-
 static void dftl_init_ftl(struct dftl *dftl, struct dftlparams *cpp, struct ssd *ssd)
 {
 	/*copy dftlparams*/
 	dftl->cp = *cpp;
 	dftl->ssd = ssd;
-	dftl->c_cmt_tt = 0;
-	dftl->c_gtd_tt = 0;
 
+	
 	/* initialize maptbl */
+	printk(KERN_INFO "**hj** init_maptbl??? \n");
 	init_maptbl(dftl); // mapping table
-
+	printk(KERN_INFO "**hj** init_rmap??? \n");
 	/* initialize rmap */
-	//init_rmap(dftl); // reverse mapping table (?)
+	init_rmap(dftl); // reverse mapping table (?)
 
 	/* initialize all the lines */
 	init_lines(dftl);
 
-	/*init global wearleveling*/
-	/* no need for dftl */
-	//init_global_wearleveling(dftl);
- 
 	/* initialize write pointer, this is how we allocate new pages for writes */
 	prepare_write_pointer(dftl, USER_IO);
 	prepare_write_pointer(dftl, GC_IO);
@@ -473,16 +434,10 @@ static void dftl_init_ftl(struct dftl *dftl, struct dftlparams *cpp, struct ssd 
 static void dftl_remove_ftl(struct dftl *dftl)
 {	
 	int i;
-	struct pool_mgmt *pm = &dftl->pm;
-	for (i=0;i<pm->tt_lines;i++) {
-		if (pm->lines[i].total_erase_cnt !=0) {
-			printk(KERN_INFO "block %d %d\n", i , pm->lines[i].total_erase_cnt);
-		}
-	}
+
 	remove_lines(dftl);
 	remove_rmap(dftl);
 	remove_maptbl(dftl);
-	remove_plins(dftl);
 }
 
 static void dftl_init_params(struct dftlparams *cpp)
@@ -492,369 +447,6 @@ static void dftl_init_params(struct dftlparams *cpp)
 	cpp->gc_thres_lines_high = 2; /* Need only two lines.(host write, gc)*/
 	cpp->enable_gc_delay = 1;
 	cpp->pba_pcent = (int)((1 + cpp->op_area_pcent) * 100);
-}
-
-
-
-static bool check_cold_data_migration(struct dftl *dftl)
-{
-	struct pool_mgmt *pm = &dftl->pm;
-//	printk(KERN_INFO "1st %d %d\n", g_max_ec_in_hot_pool->total_erase_cnt, g_min_ec_in_cold_pool->total_erase_cnt);
-	if ((g_max_ec_in_hot_pool->total_erase_cnt - g_min_ec_in_cold_pool->total_erase_cnt) > pm->GC_TH) {
-		return true;
-	} else {
-		return false;
-	}
-}
-
-static bool check_hot_pool_adjustment(struct dftl *dftl)
-{
-	struct pool_mgmt *pm = &dftl->pm;
-//	printk(KERN_INFO "2nd %d %d\n", g_max_ec_in_hot_pool->total_erase_cnt,g_min_ec_in_hot_pool->total_erase_cnt);
-	if ((g_max_ec_in_hot_pool->total_erase_cnt - g_min_ec_in_hot_pool->total_erase_cnt) > (2 * (pm->GC_TH))) {
-		return true;
-	} else {
-		return false;
-	}
-}
-
-static bool check_cold_pool_adjustment(struct dftl *dftl)
-{
-	struct pool_mgmt *pm = &dftl->pm;
-//	printk(KERN_INFO "3rd %d %d\n", g_max_rec_in_cold_pool->nr_recent_erase_cnt,g_min_rec_in_hot_pool->nr_recent_erase_cnt);
-	if ((g_max_rec_in_cold_pool->nr_recent_erase_cnt - g_min_rec_in_hot_pool->nr_recent_erase_cnt) > pm->GC_TH) {
-		return true;
-	} else {
-		return false;
-	}
-}
-
-static void dual_pool_copyback(struct dftl *dftl, struct ppa ppa , struct ppa *ppa_old , int dual_pool_copy);
-static void dual_pool_clean_one_flashpg(struct dftl *dftl, struct ppa *ppa, struct ppa *ppa_old ,int dual_pool_copy);
-static uint64_t dual_pool_gc_write_page(struct dftl *dftl, struct ppa *old_ppa, struct ppa *ppa_dual, int dual_pool_copy);
-static void inc_ers_cnt(struct ppa *ppa, struct dftl *dftl);
-static void mark_line_free(struct dftl *dftl, struct ppa *ppa);
-static void mark_block_free(struct dftl *dftl, struct ppa *ppa);
-static inline bool valid_lpn(struct dftl *dftl, uint64_t lpn);
-static void mark_page_valid(struct dftl *dftl, struct ppa *ppa, int dual_pool);
-static void check_min_max_pool(struct dftl *dftl);
-static void clean_one_flashpg(struct dftl *dftl, struct ppa *ppa);
-static inline bool mapped_ppa(struct ppa *ppa);
-static void mark_page_invalid(struct dftl *dftl, struct ppa *ppa, int dual_pool);
-static void advance_write_pointer(struct dftl *dftl, uint32_t io_type, int dual_pool);
-
-/* 
-1. HOT POOL 에서 가장 삭제가 많이 된 블록(oldest block)의 valid data migration
-2. oldest block erase
-3. Cold pool 에서 가장 삭제가 덜 된 블록에서(youngest block) valid한 data 를 oldest block으로 복사
-4. youngest block 삭제
-5. oldest block & youngest block pool 변경 & oldest block EEC reset
-6. pool status update
-*/
-static void cold_pool_migration(struct dftl *dftl, struct ppa *ppa_mig ,uint64_t local_lpn)
-{
-	struct line_mgmt *lm = &dftl->lm;
-	struct pool_mgmt *pm = &dftl->pm;
-	struct ssdparams *spp = &dftl->ssd->sp;
-	struct line *victim_line = NULL;
-	struct ppa ppa;
-	int i;
-
-	/* need to advance the write pointer here */
-	advance_write_pointer(dftl, GC_IO, 1);
-
-	// ppa = get_maptbl_ent(dftl, local_lpn);	
-	// if (mapped_ppa(&ppa)) {
-	// 		/* update old page information first */
-	// 		mark_page_invalid(dftl, &ppa,1);
-	// 		set_rmap_ent(dftl, INVALID_LPN, &ppa);
-	// 		NVMEV_DEBUG("%s: %lld is invalid, ", __func__, ppa2pgidx(dftl, &ppa));
-	// }
-
-	//victim_line = &lm->lines[g_max_ec_in_hot_pool->id];
-	//ppa.g.blk = victim_line->id;
-	//dftl->wfc.credits_to_refill = victim_line->ipc;
-
-	//printk(KERN_INFO "victim_line : %d\n",victim_line->id);
-
-	// /* 1. hot pool valid data migration */
-	//dual_pool_copyback(dftl,ppa,ppa,0);
-
-	// /* 2. oldest block erase */
-	//mark_line_free(dftl, &ppa);
-	//inc_ers_cnt(&ppa, dftl);
-	victim_line = &lm->lines[g_min_ec_in_cold_pool->id];
-	//pqueue_change_priority(lm->victim_line_pq, spp->pgs_per_line , victim_line);
-	pqueue_remove(lm->victim_line_pq,victim_line);
-	//victim_line = select_victim_line(dftl, 0);
-	//pqueue_pop(lm->victim_line_pq);
-	//victim_line->pos = 0;
-	lm->victim_line_cnt--;
-
-	ppa.g.blk = victim_line->id;
-	dftl->wfc.credits_to_refill = victim_line->ipc;
-
-	/* 3. cold pool youngest block valid data -> hot pool oldest block (erased) */
-	if (g_min_ec_in_cold_pool->total_erase_cnt > 0 ) {
-		dual_pool_copyback(dftl,ppa,ppa_mig,1);
-	/* 4. youngest block erase */
-		pqueue_insert(lm->victim_line_pq, victim_line);
-		mark_line_free(dftl, &ppa);
-		inc_ers_cnt(&ppa, dftl);
-	}
-	
-	// /* 5. oldest block & yougesst block pool switch */
-	g_max_ec_in_hot_pool->hot_cold_pool = 1;
-	g_min_ec_in_cold_pool->hot_cold_pool = 0;
-	g_max_ec_in_hot_pool->nr_recent_erase_cnt = 0;
-	
-	/* 6. pool state update */
-	check_min_max_pool(dftl);
-
-}
-
-static void dual_pool_copyback(struct dftl *dftl, struct ppa ppa , struct ppa *ppa_mig , int dual_pool_copy) {
-	/* copy back valid data */
-	int flashpg;
-	struct ssdparams *spp = &dftl->ssd->sp;
-
-	for (flashpg = 0; flashpg < spp->flashpgs_per_blk; flashpg++) {
-		int ch, lun;
-
-		ppa.g.pg = flashpg * spp->pgs_per_flashpg;
-		for (ch = 0; ch < spp->nchs; ch++) {
-			for (lun = 0; lun < spp->luns_per_ch; lun++) {
-				struct nand_lun *lunp;
-				ppa.g.ch = ch;
-				ppa.g.lun = lun;
-				ppa.g.pl = 0;
-				lunp = get_lun(dftl->ssd, &ppa);
-				dual_pool_clean_one_flashpg(dftl, &ppa, ppa_mig, dual_pool_copy);
-				if (flashpg == (spp->flashpgs_per_blk - 1)) {
-					struct dftlparams *cpp = &dftl->cp;
-					
-					mark_block_free(dftl, &ppa);
-					if (cpp->enable_gc_delay) {
-						struct nand_cmd gce = {
-							.type = GC_IO,
-							.cmd = NAND_ERASE,
-							.stime = 0,
-							.interleave_pci_dma = false,
-							.ppa = &ppa,
-						};
-						ssd_advance_nand(dftl->ssd, &gce);
-					}
-					lunp->gc_endtime = lunp->next_lun_avail_time;
-				}
-			}
-		}
-	}
-}
-
-/* here ppa identifies the block we want to clean */
-static void dual_pool_clean_one_flashpg(struct dftl *dftl, struct ppa *ppa, struct ppa *ppa_mig ,int dual_pool_copy)
-{
-	struct ssdparams *spp = &dftl->ssd->sp;
-	struct dftlparams *cpp = &dftl->cp;
-	struct nand_page *pg_iter = NULL;
-	int cnt = 0, i = 0;
-	uint64_t completed_time = 0;
-	struct ppa ppa_copy = *ppa;
-
-	for (i = 0; i < spp->pgs_per_flashpg; i++) {
-		pg_iter = get_pg(dftl->ssd, &ppa_copy);
-		/* there shouldn't be any free page in victim blocks */
-		//if (dual_pool_copy == 0) NVMEV_ASSERT(pg_iter->status != PG_FREE);
-		if (pg_iter->status == PG_VALID)
-			cnt++;
-		ppa_copy.g.pg++;
-	}
-
-	ppa_copy = *ppa;
-
-	if (cnt <= 0)
-		return;
-
-	if (cpp->enable_gc_delay) {
-		struct nand_cmd gcr = {
-			.type = GC_IO,
-			.cmd = NAND_READ,
-			.stime = 0,
-			.xfer_size = spp->pgsz * cnt,
-			.interleave_pci_dma = false,
-			.ppa = &ppa_copy,
-		};
-		completed_time = ssd_advance_nand(dftl->ssd, &gcr);
-	}
-
-	for (i = 0; i < spp->pgs_per_flashpg; i++) {
-		pg_iter = get_pg(dftl->ssd, &ppa_copy);
-
-		/* there shouldn't be any free page in victim blocks */
-		if (pg_iter->status == PG_VALID) {
-			/* delay the maptbl update until "write" happens */
-			dual_pool_gc_write_page(dftl, &ppa_copy, ppa_mig ,dual_pool_copy);
-		}
-
-		ppa_copy.g.pg++;
-	}
-}
-
-/* move valid page data (already in DRAM) from victim line to a new page */
-static uint64_t dual_pool_gc_write_page(struct dftl *dftl, struct ppa *old_ppa, struct ppa *ppa_mig, int dual_pool_copy)
-{
-	struct ssdparams *spp = &dftl->ssd->sp;
-	struct dftlparams *cpp = &dftl->cp;
-	struct ppa new_ppa;
-	struct line_mgmt *lm = &dftl->lm;
-	struct pool_mgmt *pm = &dftl->pm;
-	struct line *mig_line = NULL;
-	uint64_t lpn = get_rmap_ent(dftl, old_ppa);
-	struct write_pointer *wp = __get_wp(dftl, 1);
-
-	mig_line =  &lm->lines[g_max_ec_in_hot_pool->id];
-
-	NVMEV_ASSERT(valid_lpn(dftl, lpn));
-	if (dual_pool_copy == 0) { 
-		new_ppa = get_new_page(dftl, GC_IO);
-	} else {
-		printk(KERN_INFO "**hj* else?\n");
-		new_ppa.g.blk = mig_line->id;
-		new_ppa.ppa = 0;
-		new_ppa.g.ch = 0;
-		new_ppa.g.lun = 0;
-		new_ppa.g.pg = 0;
-		new_ppa.g.pl = 0;	
-	}
-
-	/* update maptbl */
-	set_maptbl_ent(dftl, lpn, &new_ppa);
-	/* update rmap */
-	set_rmap_ent(dftl, lpn, &new_ppa);
-
-	mark_page_valid(dftl, &new_ppa, 1);
-
-	/* need to advance the write pointer here */
-	advance_write_pointer(dftl, GC_IO, 1);
-
-	if (cpp->enable_gc_delay) {
-		struct nand_cmd gcw = {
-			.type = GC_IO,
-			.cmd = NAND_NOP,
-			.stime = 0,
-			.interleave_pci_dma = false,
-			.ppa = &new_ppa,
-		};
-		if (last_pg_in_wordline(dftl, &new_ppa)) {
-			gcw.cmd = NAND_WRITE;
-			gcw.xfer_size = spp->pgsz * spp->pgs_per_oneshotpg;
-		}
-
-		ssd_advance_nand(dftl->ssd, &gcw);
-	}
-
-	return 0;
-}
-
-
-static void inc_ers_cnt(struct ppa *ppa,struct dftl *dftl) {
-	struct pool_mgmt *pm = &dftl->pm;
-	pm->lines[ppa->g.blk].total_erase_cnt++;
-	pm->lines[ppa->g.blk].nr_recent_erase_cnt++;
-}
-
-/* 
-1. Cold pool 내에서 가장 큰 EEC를 갖는 블록을 Hot Pool로 이동
-2. Hot pool로 이동후 Cold pool과 Hot pool의 상태를 갱신 (Cold pool에서 oldest block 이었다던지..)
- */
-
-static void cold_pool_adjustment(struct dftl *dftl)
-{
-	struct pool_mgmt *pm = &dftl->pm;
-	g_max_rec_in_cold_pool->hot_cold_pool = 0;
-	//printk(KERN_INFO "*hj_max* %d",g_max_rec_in_cold_pool->nr_recent_erase_cnt);
-	check_min_max_pool(dftl);
-}
-
-/* 
-1. Hot pool 에서 가장 삭제 수가 작은 블록을 Cold pool 로 이동
-2. 이동후 Cold pool과 Hot pool의 상태를 갱신
- */
-static void hot_pool_adjustment(struct dftl *dftl)
-{
-	struct pool_mgmt *pm = &dftl->pm;
-	g_min_ec_in_hot_pool->hot_cold_pool = 1;
-	check_min_max_pool(dftl);
-}
-
-static void check_min_max_pool(struct dftl *dftl)
-{
-	struct pool_mgmt *pm = &dftl->pm;
-	int i;
-	int hot_min_ec = INT_MAX;
-	int hot_max_ec = 0;
-	int hot_min_rec = INT_MAX;
-	int hot_max_rec = 0;
-
-	int cold_min_ec = INT_MAX;
-	int cold_max_ec = 0;
-	int cold_min_rec = INT_MAX;
-	int cold_max_rec = 0;
-
-	//printk(KERN_INFO "*hj_max* %d %d %d %d\n",g_max_ec_in_cold_pool->total_erase_cnt,cold_pool->total_erase_cnt,g_max_rec_in_cold_pool->nr_recent_erase_cnt,g_max_rec_in_hot_pool->nr_recent_erase_cnt);
-	//printk(KERN_INFO "*hj_min* %d %d %d %d\n",g_min_ec_in_cold_pool->total_erase_cnt,g_min_ec_in_hot_pool->total_erase_cnt,g_min_rec_in_cold_pool->nr_recent_erase_cnt,g_min_rec_in_hot_pool->nr_recent_erase_cnt);
-	
-
-	for (i = 0; i < pm->tt_lines; i++) {
-		if(pm->lines[i].hot_cold_pool == 0) {
-			//if (pm->lines[i].total_erase_cnt > 0) {
-			//	printk(KERN_INFO "hot?? %d %d", i , pm->lines[i].total_erase_cnt);
-			//}
-			// min ec in hot pool
-			if(hot_min_ec > pm->lines[i].total_erase_cnt) {
-				g_min_ec_in_hot_pool = &pm->lines[i];
-				hot_min_ec = pm->lines[i].total_erase_cnt;
-			}
-			// max ec in hot pool
-			if(pm->lines[i].total_erase_cnt > hot_max_ec) {
-				g_max_ec_in_hot_pool = &pm->lines[i];
-				hot_max_ec = pm->lines[i].total_erase_cnt;
-				//printk(KERN_INFO "hot_ec?? %d\n", i);
-			}
-			// min rec in hot pool
-			if(hot_min_rec > pm->lines[i].nr_recent_erase_cnt) {
-				g_min_rec_in_hot_pool = &pm->lines[i];
-				hot_min_rec = pm->lines[i].nr_recent_erase_cnt;
-			}
-			// max rec in hot pool
-			if(pm->lines[i].nr_recent_erase_cnt > hot_max_rec) {
-				g_max_rec_in_hot_pool = &pm->lines[i];
-				hot_max_rec = pm->lines[i].nr_recent_erase_cnt;
-				//printk(KERN_INFO "hot_rec?? %d\n", g_max_rec_in_hot_pool->nr_recent_erase_cnt);
-			}
-		} else {
-			// min ec in cold pool
-			if(cold_min_ec > pm->lines[i].total_erase_cnt) {
-				g_min_ec_in_cold_pool = &pm->lines[i];
-				cold_min_ec = pm->lines[i].total_erase_cnt;
-			}
-			// max ec in cold pool
-			if(pm->lines[i].total_erase_cnt > cold_max_ec) {
-				g_max_ec_in_cold_pool = &pm->lines[i];
-				cold_max_ec = pm->lines[i].total_erase_cnt;
-			}
-			// min rec in cold pool
-			if(cold_min_rec > pm->lines[i].nr_recent_erase_cnt) {
-				g_min_rec_in_cold_pool = &pm->lines[i];
-				cold_min_rec = pm->lines[i].nr_recent_erase_cnt;
-			}
-			// max rec in cold pool
-			if(pm->lines[i].nr_recent_erase_cnt > cold_max_rec) {
-				g_max_rec_in_cold_pool = &pm->lines[i];
-				cold_max_rec = pm->lines[i].nr_recent_erase_cnt;
-			}
-		}
-	}
 }
 
 void dftl_init_namespace(struct nvmev_ns *ns, uint32_t id, uint64_t size, void *mapped_addr,
@@ -1240,7 +832,6 @@ static void mark_line_free(struct dftl *dftl, struct ppa *ppa)
 static int do_gc(struct dftl *dftl, bool force, uint64_t local_lpn)
 {
 	struct line *victim_line = NULL;
-	struct pool_mgmt *pm = &dftl->pm;
 	struct ssdparams *spp = &dftl->ssd->sp;
 	struct ppa ppa;
 	int flashpg;
@@ -1296,27 +887,7 @@ static int do_gc(struct dftl *dftl, bool force, uint64_t local_lpn)
 
 	/* update line status */
 	mark_line_free(dftl, &ppa);
-	
-	inc_ers_cnt(&ppa,dftl);
 
-	// /*여기다가 dual pool wear leveling call*/
-	// if ((g_max_ec_in_cold_pool->total_erase_cnt< pm->GC_TH) || (g_max_ec_in_hot_pool->total_erase_cnt< pm->GC_TH)) {
-	// 	check_min_max_pool(dftl);
-	// }
-
-	//  if (check_cold_data_migration(dftl)) {
-	// 	//printk(KERN_INFO "?1111cold_data_migration %d %d \n",g_max_ec_in_hot_pool->total_erase_cnt,g_min_ec_in_cold_pool->total_erase_cnt);
-	//  	cold_pool_migration(dftl, &ppa ,local_lpn);
-	//  }
-	//  if (check_cold_pool_adjustment(dftl)) {
-	// //	printk(KERN_INFO "?cold?? %d %d %d %d\n", g_max_ec_in_cold_pool->total_erase_cnt,g_min_ec_in_cold_pool->total_erase_cnt,g_max_rec_in_cold_pool->nr_recent_erase_cnt,g_min_rec_in_cold_pool->nr_recent_erase_cnt);
-	// //	printk(KERN_INFO "?hot?? %d %d %d %d\n", g_max_ec_in_hot_pool->total_erase_cnt,g_min_ec_in_hot_pool->total_erase_cnt,g_max_rec_in_hot_pool->nr_recent_erase_cnt,g_min_rec_in_hot_pool->nr_recent_erase_cnt);
-	//  	cold_pool_adjustment(dftl);
-	//  }
-	//  if (check_hot_pool_adjustment(dftl)) {
-	// //	printk(KERN_INFO "?33333hot_pool_adjustment\n");
-	//  	hot_pool_adjustment(dftl);
-	//  }
 
 	return 0;
 }
@@ -1339,21 +910,11 @@ static bool is_same_flash_page(struct dftl *dftl, struct ppa ppa1, struct ppa pp
 	return (ppa1.h.blk_in_ssd == ppa2.h.blk_in_ssd) && (ppa1_page == ppa2_page);
 }
 
-// 해시 테이블 생성
-struct CMT* createHashTable(int table_size, int capacity) {
-    struct CMT* ht = (struct CMT*)vmalloc(sizeof(struct CMT));
-    ht->table = (struct Node*)vmalloc(table_size * sizeof(struct Node));
-    ht->size = table_size;
-    ht->capacity = capacity;
-    ht->current_size = 0;
-    ht->current_time = 0;
-    return ht;
-}
 
 // 새로운 노드 생성
 struct Node* createNode(const char* key, struct Dppn value, int dirty, int time) {
-    struct Node* newNode = (struct Node*)malloc(sizeof(struct Node));
-    newNode->key = strdup(key);
+    struct Node* newNode = (struct Node*)vmalloc(sizeof(struct Node));
+    newNode->key = (char *)key;
     newNode->value = value;
     newNode->dirty = dirty;
     newNode->time = time;
@@ -1362,31 +923,43 @@ struct Node* createNode(const char* key, struct Dppn value, int dirty, int time)
 }
 
 // // 해시 테이블에서 값 찾기
-// struct Node* search(struct CMT* cmt, const char* key) {
-//     unsigned int index = hash(key, cmt->size);
-//     struct Node* currentNode = cmt->table[index].next;
+ struct Node* search(struct CMT* cmt, const char* key) {
+     unsigned int index = hash(key, cmt->size);
+     struct Node* currentNode = cmt->table[index].next;
 
-//     // 연결 리스트를 순회하며 키에 해당하는 값을 찾음
-//     while (currentNode != NULL) {
-//         if (strcmp(currentNode->key, key) == 0) {
-//             return currentNode;
-//         }
-//         currentNode = currentNode->next;
-//     }
+     // 연결 리스트를 순회하며 키에 해당하는 값을 찾음
+     while (currentNode != NULL) {
+         if (strcmp(currentNode->key, key) == 0) {
+             return currentNode;
+         }
+         currentNode = currentNode->next;
+     }
+     return NULL;
+ }
 
-//     // 키를 찾지 못한 경우 NULL 반환
-//     return NULL;
+// void insertOrUpdateGTD(struct dftl *dftl, int Dlpn, struct PMTEntry pmt_entry) {	//[TODO]
+// 	struct PMTEntry *GTD = dftl->GTD;
+// 	int pmt_index = Dlpn/512;
+// 	//struct PMTEntry pmt_entry;
+// 	//pmt_entry.ch = 
+//     //GTD[pmt_index].vpn = pmt_entry;
 // }
 
 // 가장 오래된 엔트리를 삭제
-void evictOldestEntry(struct CMT* cmt) {
-    int oldest_time = cmt->current_time;
+void evictOldestEntry(struct dftl *dftl, struct CMT* cmt) {
+    int oldest_time = dftl->cmt->current_time;
+	struct PMTEntry *GTD = dftl->GTD;
+	struct ssdparams *spp = &dftl->ssd->sp;
+	//struct PMTEntry *GTD_backup = dftl->GTD;
+	struct ppa prev_ppa;
     struct Node* oldest_node = NULL;
     struct Node* prev_node = NULL;
     struct Node* current_node = NULL;
+	int i;
+	int pmt_index;
 
     // 모든 슬롯을 순회하며 가장 오래된 엔트리를 찾음
-    for (int i = 0; i < cmt->size; ++i) {
+    for (i = 0; i < cmt->size; ++i) {
         prev_node = &(cmt->table[i]);
         current_node = prev_node->next;
         
@@ -1401,27 +974,31 @@ void evictOldestEntry(struct CMT* cmt) {
         }
     }
 
-    // 가장 오래된 엔트리 삭제 + 만약 dirty가 1이면 업데이트 하고 나머지 block들도 copyback 해야됨..
+    // 가장 오래된 엔트리 삭제 + 만약 dirty가 1이면 업데이트 하고 나머지 block들도 copyback 해야됨.. [TODO]
     if (oldest_node != NULL) {
 		if (oldest_node->dirty == 1) {
-			
-			int pmt_index = Dlpn/512;
-	//struct PMTEntry pmt_entry;
-	//pmt_entry.ch = 
-    GTD[Dlpn] = pmt_entry;
-			insertOrUpdateGTD
+			pmt_index = (int)(*(oldest_node->key)/512);
+		    //prev_ppa.g.blk = GTD[pmt_index].vpn/(spp->pgs_per_blk);
+			//prev_ppa.g.pg = GTD[pmt_index].vpn%(spp->pgs_per_blk);
+			//prev_ppa.g.ch = GTD[pmt_index].ch;
+			//prev_ppa.g.lun = GTD[pmt_index].lun;
+			//prev_ppa.g.pl = GTD[pmt_index].pl;
+			GTD[pmt_index].vpn = oldest_node->value.blk * (spp->pgs_per_blk) + oldest_node->value.pg;
+			GTD[pmt_index].ch = oldest_node->value.ch;
+			GTD[pmt_index].lun = oldest_node->value.lun;
+			GTD[pmt_index].pl = oldest_node->value.pl;
 		}
         prev_node->next = oldest_node->next;
-        free(oldest_node->key);
-        free(oldest_node);
+        vfree(oldest_node->key);
+        vfree(oldest_node);
         cmt->current_size--;
     }
 }
 
 // 해시 테이블에 값 삽입 또는 업데이트 (LRU 캐시 교체 정책 포함)
-void insertOrUpdate(struct CMT* cmt, const char* key, struct Dppn value) {
+void insertOrUpdate(struct dftl *dftl, struct CMT* cmt, const char* key, struct Dppn value) {
     unsigned int index = hash(key, cmt->size);
-
+	struct Node* newNode;
     // 이미 존재하는 키인 경우 업데이트 수행
     struct Node* existingNode = search(cmt, key);
     if (existingNode != NULL) {
@@ -1433,52 +1010,36 @@ void insertOrUpdate(struct CMT* cmt, const char* key, struct Dppn value) {
 
     // 용량이 다 찼을 경우 가장 오래된 엔트리 삭제
     if (cmt->current_size >= cmt->capacity) {
-        evictOldestEntry(cmt);
+        evictOldestEntry(dftl,cmt);
     }
 
     // 새로운 노드를 생성하여 삽입
-    struct Node* newNode = createNode(key, value, 1, cmt->current_time++);
+    newNode = createNode(key, value, 1, cmt->current_time++);
     newNode->next = cmt->table[index].next;
     cmt->table[index].next = newNode;
     cmt->current_size++;
 }
 
 
-static struct ppa find_oldest_cmt(struct dftl *dftl) {
-	int i, oldest_num;
-	struct ssdparams *spp = &dftl->ssd->sp;
-	oldest_num = -1;
-	
-	for (i=0; i<spp->tt_cmt_entry; i++) {
-		if (dftl->cmt[i].modi_time == -1) {
-			continue;
-		}
-		if (oldest_num == -1) {
-			oldest_num = i;
-		} else {
-			if (dftl->cmt[i].modi_time < dftl->cmt[oldest_num].modi_time) {
-				oldest_num = i;
-			}
-		}
-	}
+static struct Node* findDlpn(struct CMT* cmt, const char* key) {
+    unsigned int index = hash(key, cmt->size);
+    struct Node* currentNode = &(cmt->table[index]);
 
-	return oldest_num;
+    // 연결 리스트를 순회하며 해당 Dlpn을 찾음
+    while (currentNode != NULL) {
+        if (strcmp(currentNode->key, key) == 0) {
+            return currentNode; // Dlpn을 찾은 경우
+        }
+        currentNode = currentNode->next;
+    }
+
+    return NULL; // Dlpn을 찾지 못한 경우
 }
 
-static uint32_t gtd_trace(struct dftl *dftl, uint64_t local_lpn ) {
-	uint32_t gtd_index, gtd_offset, gtd_ppn, bank;
-	struct ppa ppa;
-	
-	gtd_index = local_lpn / (KB(32)/sizeof(uint32_t));
-	gtd_offset = local_lpn % (KB(32)/sizeof(uint32_t));
-	gtd_vpn = dftl->gtd[gtd_index];
-	bank = 
-
-
-	mark_page_invalid(dftl,&,0);
-	
+// DFTL 내부의 CMT에서 Dlpn을 찾는 함수
+static struct Node* lookup_CMT(struct dftl* dftl, const char* key) {
+    return findDlpn(dftl->cmt, key);
 }
-
 
 static bool dftl_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvmev_result *ret)
 {
@@ -1498,7 +1059,7 @@ static bool dftl_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 	uint64_t nsecs_completed, nsecs_latest = nsecs_start;
 	uint32_t xfer_size, i, j;
 	uint32_t nr_parts = ns->nr_parts;
-	char* Dlpn;
+	char *Dlpn;
 	struct CMT *cmt;
 	struct Dppn new_ppa;
 	struct Node* target_node;
@@ -1536,7 +1097,7 @@ static bool dftl_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 			struct ppa cur_ppa;
 
 			local_lpn = lpn / nr_parts;
-			Dlpn = local_lpn;
+			Dlpn = (char *)local_lpn;
 			cur_ppa = get_maptbl_ent(dftl, local_lpn);
 			target_node = lookup_CMT(dftl, Dlpn);
 			if (target_node == NULL) {
@@ -1545,23 +1106,21 @@ static bool dftl_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 				new_ppa.lun = cur_ppa.g.lun;
 				new_ppa.pg = cur_ppa.g.pg;
 				new_ppa.pl = cur_ppa.g.pl;
-				insertOrUpdate(cmt, Dlpn, new_ppa);
+				//insertOrUpdate(dftl,cmt, Dlpn, new_ppa);
 			} else {
 				cur_ppa.g.blk = target_node->value.blk;
 				cur_ppa.g.ch = target_node->value.ch;
 				cur_ppa.g.lun = target_node->value.lun;
 				cur_ppa.g.pg = target_node->value.pg;
 				cur_ppa.g.pl = target_node->value.pl;
-				update_cmt(dftl,Dlpn,ppa,0);
+				//insertOrUpdate(dftl,cmt,Dlpn,new_ppa);
 			}
-			
+			insertOrUpdate(dftl,cmt,Dlpn,new_ppa);
+			printk(KERN_INFO "**hj** dftl_read_1?? \n");
 			//cur_ppa.g.blk = get_maptbl_ent(dftl, local_lpn);
 			if (!mapped_ppa(&cur_ppa) || !valid_ppa(dftl, &cur_ppa)) {
-				NVMEV_DEBUG_VERBOSE("lpn 0x%llx not mapped to valid ppa\n",
-							local_lpn);
-				NVMEV_DEBUG_VERBOSE("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d\n",
-							cur_ppa.g.ch, cur_ppa.g.lun, cur_ppa.g.blk,
-							cur_ppa.g.pl, cur_ppa.g.pg);
+			//	NVMEV_DEBUG_VERBOSE("lpn 0x%llx not mwnapped to valid ppa\n",local_lpn);
+				NVMEV_DEBUG_VERBOSE("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d\n",cur_ppa.g.ch, cur_ppa.g.lun, cur_ppa.g.blk,	cur_ppa.g.pl, cur_ppa.g.pg);
 				continue;
 			}
 
@@ -1598,9 +1157,6 @@ static bool dftl_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 	return true;
 }
 
-
-lpn -> ppn
-
 // static int lookup_CMT(struct dftl *dftl ,uint64_t local_lpn) {	
 // 	int i;
 // 	struct ssdparams *spp = &dftl->ssd->sp;
@@ -1617,30 +1173,11 @@ lpn -> ppn
 // }
 
 // CMT에서 Dlpn을 찾는 함수
-struct Node* findDlpn(struct CMT* cmt, const char* key) {
-    unsigned int index = hash(key);
-    struct Node* currentNode = cmt->table[index];
 
-    // 연결 리스트를 순회하며 해당 Dlpn을 찾음
-    while (currentNode != NULL) {
-        if (strcmp(currentNode->key, key) == 0) {
-            return currentNode; // Dlpn을 찾은 경우
-        }
-        currentNode = currentNode->next;
-    }
-
-    return NULL; // Dlpn을 찾지 못한 경우
-}
-
-// DFTL 내부의 CMT에서 Dlpn을 찾는 함수
-struct Node* lookup_CMT(struct dftl* dftl, const char* key) {
-    return findDlpn(&(dftl->cmt), key);
-}
-
-void update_cmt_ppn(struct dftl *dftl,const char* key,struct ppa ppa,int dirty) {
-    unsigned int index = hash(key);
+void update_cmt(struct dftl *dftl,const char* key,struct ppa ppa,int dirty) {
+    unsigned int index = hash(key, dftl->cmt->size);
 	//struct CMT* cmt = dftl->cmt;
-    struct Node* currentNode = dftl->cmt->table[index];
+    struct Node* currentNode = dftl->cmt->table;
 
 	while (currentNode != NULL) {
         if (strcmp(currentNode->key, key) == 0) {
@@ -1715,7 +1252,7 @@ static bool dftl_write(struct nvmev_ns *ns, struct nvmev_request *req, struct nv
 
 		dftl = &dftls[lpn % nr_parts];
 		local_lpn = lpn / nr_parts;
-		Dlpn = local_lpn;
+		Dlpn = (char *)local_lpn;
 
 		ppa = get_maptbl_ent(dftl, local_lpn); // Check whether the given LPN has been written before
 		if (mapped_ppa(&ppa)) {
@@ -1740,7 +1277,7 @@ static bool dftl_write(struct nvmev_ns *ns, struct nvmev_request *req, struct nv
 		}
 
 		mark_page_valid(dftl, &ppa,0);
-
+		printk(KERN_INFO "**hj** dftl_write_1?? \n");
 		/* need to advance the write pointer here */
 		advance_write_pointer(dftl, USER_IO, 0);
 
