@@ -525,7 +525,9 @@ void NVMEV_NAMESPACE_INIT(struct nvmev_dev *nvmev_vdev)
 		else if (NS_SSD_TYPE(i) == SSD_TYPE_KV)
 			kv_init_namespace(&ns[i], i, size, ns_addr, disp_no);
 		else if (NS_SSD_TYPE(i) == SSD_TYPE_DFTL)
+			//printk(KERN_INFO "**hj** good?? \n");
 			dftl_init_namespace(&ns[i], i, size, ns_addr, disp_no);
+			//conv_init_namespace(&ns[i], i, size, ns_addr, disp_no);
 		else
 			BUG_ON(1);
 
@@ -548,8 +550,9 @@ void NVMEV_NAMESPACE_FINAL(struct nvmev_dev *nvmev_vdev)
 	for (i = 0; i < nr_ns; i++) {
 		if (NS_SSD_TYPE(i) == SSD_TYPE_NVM)
 			simple_remove_namespace(&ns[i]);
-	//	else if (NS_SSD_TYPE(i) == SSD_TYPE_CONV)
-	//		conv_remove_namespace(&ns[i]);
+		else if (NS_SSD_TYPE(i) == SSD_TYPE_DFTL)
+			dftl_remove_namespace(&ns[i]);
+			//conv_remove_namespace(&ns[i]);
 		else if (NS_SSD_TYPE(i) == SSD_TYPE_ZNS)
 			zns_remove_namespace(&ns[i]);
 		else if (NS_SSD_TYPE(i) == SSD_TYPE_KV)
@@ -636,32 +639,32 @@ static void NVMeV_exit(void)
 {
 	int i;
 
-	if (nvmev_vdev->virt_bus != NULL) {
-		pci_stop_root_bus(nvmev_vdev->virt_bus);
-		pci_remove_root_bus(nvmev_vdev->virt_bus);
-	}
+	// if (nvmev_vdev->virt_bus != NULL) {
+	// 	pci_stop_root_bus(nvmev_vdev->virt_bus);
+	// 	pci_remove_root_bus(nvmev_vdev->virt_bus);
+	// }
 
-	NVMEV_DISPATCHER_FINAL(nvmev_vdev);
-	NVMEV_IO_WORKER_FINAL(nvmev_vdev);
+	// NVMEV_DISPATCHER_FINAL(nvmev_vdev);
+	// NVMEV_IO_WORKER_FINAL(nvmev_vdev);
 
-	NVMEV_NAMESPACE_FINAL(nvmev_vdev);
-	NVMEV_STORAGE_FINAL(nvmev_vdev);
+	// NVMEV_NAMESPACE_FINAL(nvmev_vdev);
+	// NVMEV_STORAGE_FINAL(nvmev_vdev);
 
-	if (io_using_dma) {
-		ioat_dma_cleanup();
-	}
+	// if (io_using_dma) {
+	// 	ioat_dma_cleanup();
+	// }
 
-	for (i = 0; i < nvmev_vdev->nr_sq; i++) {
-		kfree(nvmev_vdev->sqes[i]);
-	}
+	// for (i = 0; i < nvmev_vdev->nr_sq; i++) {
+	// 	kfree(nvmev_vdev->sqes[i]);
+	// }
 
-	for (i = 0; i < nvmev_vdev->nr_cq; i++) {
-		kfree(nvmev_vdev->cqes[i]);
-	}
+	// for (i = 0; i < nvmev_vdev->nr_cq; i++) {
+	// 	kfree(nvmev_vdev->cqes[i]);
+	// }
 
-	VDEV_FINALIZE(nvmev_vdev);
+	// VDEV_FINALIZE(nvmev_vdev);
 
-	NVMEV_INFO("Virtual NVMe device closed\n");
+	// NVMEV_INFO("Virtual NVMe device closed\n");
 }
 
 MODULE_LICENSE("GPL v2");

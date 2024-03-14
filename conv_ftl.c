@@ -1230,7 +1230,7 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force, uint64_t local_lpn)
 				lunp = get_lun(conv_ftl->ssd, &ppa);
 				clean_one_flashpg(conv_ftl, &ppa);
 
-				if (flashpg == (spp->flashcur_ppa = get_maptbl_ent(dftl, local_lpn); - 1)) {
+				if (flashpg == (spp->flashpgs_per_blk - 1)) {
 					struct convparams *cpp = &conv_ftl->cp;
 
 					mark_block_free(conv_ftl, &ppa);

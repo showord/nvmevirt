@@ -71,7 +71,7 @@ struct Dppn {
 
 // 해시 테이블 항목을 나타내는 구조체
 struct Node {
-    char* key; // Dlpn
+    int key; // Dlpn
     struct Dppn value; // Dppn
     int dirty; // dirty flag
     int time; // 시간 정보
@@ -81,6 +81,7 @@ struct Node {
 // 해시 테이블 구조체
 struct CMT {
     struct Node* table;
+	struct Node** cmt_bucket;
     int size; // 전체 사이즈 (바이트 단위)
     int capacity; // 용량 (노드 수)
     int current_size; // 현재 크기 (삽입된 노드 수)

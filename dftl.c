@@ -32,34 +32,17 @@
 #include "nvmev.h"
 #include "dftl.h"
 
-struct pool_line *g_max_ec_in_hot_pool; //Hot Pool 에서 가장 삭제 많이 된 블록
-struct pool_line *g_min_ec_in_hot_pool; //Hot Pool 에서 가장 삭제 덜 된 블록
-struct pool_line *g_max_rec_in_hot_pool; //Hot Pool 에 이동한 후 가장 삭제 많이 된 블록
-struct pool_line *g_min_rec_in_hot_pool; //Hot Pool 에 이동한 후 가장 삭제 덜 된 블록
-struct pool_line *g_max_ec_in_cold_pool; //Cold pool 에서 가장 삭제 많이 된 블록
-struct pool_line *g_min_ec_in_cold_pool; //Cold pool 에서 가장 삭제 덜 된 블록
-struct pool_line *g_max_rec_in_cold_pool; //Cold Pool 에 이동한 후 가장 삭제 많이 된 블록
-struct pool_line *g_min_rec_in_cold_pool; //Cold Pool 에 이동한 후 가장 삭제 덜 된 블록
 
 
-//struct pool_mgmt pm;
-
-struct pool_line {
-	uint32_t id;
-	uint32_t hot_cold_pool;
-	uint32_t total_erase_cnt;
-	uint32_t nr_recent_erase_cnt;
-};
-
-// 해시 함수
-unsigned int hash(const char* key, int table_size) {
-    unsigned int hash = 0;
-    while (*key) {
-        hash = (hash * 31) + *key;
-        key++;
-    }
-    return hash % table_size;
-}
+// // 해시 함수
+// unsigned int hash(int key, int table_size) {
+//     unsigned int hash = 0;
+//     while (key) {
+//         hash = (hash * 31) + key;
+//         key++;
+//     }
+//     return hash % table_size;
+// }
 
 void schedule_internal_operation(int sqid, unsigned long long nsecs_target,
 				 struct buffer *write_buffer, unsigned int buffs_to_release);
@@ -357,32 +340,79 @@ static struct ppa get_new_page(struct dftl *dftl, uint32_t io_type)
 	return ppa;
 }
 
-struct CMT* createHashTable(int table_size, int capacity) {
-    struct CMT* ht = (struct CMT*)vmalloc(sizeof(struct CMT));
-    ht->table = (struct Node*)vmalloc(table_size * sizeof(struct Node));
-    ht->size = table_size;
-    ht->capacity = capacity;
-    ht->current_size = 0;
-    ht->current_time = 0;
-    return ht;
+static struct Node* _cmt_bucket[50];
+
+static int hash_function(int key)
+{
+	int hash = key;
+
+	hash = (hash + 0x200000000) + (hash << 12);
+	hash = (hash ^ 0x100003fff) ^ (hash >> 19);
+	hash = (hash + 0x123443fff) + (hash << 5);
+	hash = (hash + 0x153673fff) ^ (hash << 9);
+	hash = (hash + 0x188403fff) + (hash << 3);
+	hash = (hash ^ 0x102030000) ^ (hash >> 16);
+
+	return hash;
+}
+
+
+struct CMT* createHashTable(struct dftl *dftl, struct Node** cmt_table, int table_size, int capacity) {
+	int i;
+	struct Dppn value;
+	struct CMT *cmt = dftl->cmt;
+	struct Node* tmp_node;
+	struct ssdparams *spp = &dftl->ssd->sp;
+	int hash_val;
+    cmt = vmalloc(SSD_PARTITIONS * sizeof(struct CMT));
+    cmt->table = vmalloc(capacity * sizeof(struct Node));
+    cmt->size = table_size;
+    cmt->capacity = capacity;
+    cmt->current_size = 0;
+    cmt->cmt_bucket = cmt_table;
+	cmt->current_time = 0;
+
+	value.blk = -1;
+	value.ch = -1;
+	value.lun = -1;
+	value.pg = -1;
+	value.pl = -1;
+
+
+	for (i = 0; i < capacity; i++) {
+		//cmt->table[i] = createNode(j,value);
+		 // 빈 노드를 생성하고 초기값을 설정합니다.
+        cmt->table[i].key = 0;
+        cmt->table[i].value = value;
+        cmt->table[i].dirty = 0; // dirty flag 초기화
+        cmt->table[i].time = 0;  // 시간 정보 초기화
+        cmt->table[i].next = &(cmt->table[i]); // 다음 노드는 초기에는 NULL로 설정합니다.
+	}
+    return cmt;
 }
 
 static void init_maptbl(struct dftl *dftl)
 {
 	int i;
 	struct ssdparams *spp = &dftl->ssd->sp;
-	struct CMT* cmt;
-
+	struct CMT* cmt = dftl->cmt;
 	int table_size = 512 * 1024 / sizeof(struct Node);
-	//printk(KERN_INFO "**hj** init_maptbl?? %d\n", table_size);
-    cmt = createHashTable(table_size, 100);
-	//printk(KERN_INFO "**hj** create_good?? \n");
+
+	printk(KERN_INFO "**hj** init_maptbl?? %d\n", table_size);
+    cmt = createHashTable(dftl, _cmt_bucket ,table_size, 50);
+
+	dftl->maptbl = vmalloc(sizeof(struct ppa) * spp->tt_pgs);
+	for (i = 0; i < spp->tt_pgs; i++) {
+		dftl->maptbl[i].ppa = UNMAPPED_PPA;
+	}
 
 }
+
 
 static void remove_maptbl(struct dftl *dftl)
 {
 	vfree(dftl->cmt);
+	vfree(dftl->maptbl);
 }
 
 static void init_rmap(struct dftl *dftl)
@@ -410,9 +440,8 @@ static void dftl_init_ftl(struct dftl *dftl, struct dftlparams *cpp, struct ssd 
 
 	
 	/* initialize maptbl */
-	printk(KERN_INFO "**hj** init_maptbl??? \n");
 	init_maptbl(dftl); // mapping table
-	printk(KERN_INFO "**hj** init_rmap??? \n");
+	
 	/* initialize rmap */
 	init_rmap(dftl); // reverse mapping table (?)
 
@@ -912,26 +941,29 @@ static bool is_same_flash_page(struct dftl *dftl, struct ppa ppa1, struct ppa pp
 
 
 // 새로운 노드 생성
-struct Node* createNode(const char* key, struct Dppn value, int dirty, int time) {
+struct Node* createNode(int key, struct Dppn value, int dirty, int time) {
     struct Node* newNode = (struct Node*)vmalloc(sizeof(struct Node));
-    newNode->key = (char *)key;
+    newNode->key = key;
     newNode->value = value;
     newNode->dirty = dirty;
     newNode->time = time;
-    newNode->next = NULL;
+    newNode->next = newNode;
     return newNode;
 }
 
 // // 해시 테이블에서 값 찾기
- struct Node* search(struct CMT* cmt, const char* key) {
-     unsigned int index = hash(key, cmt->size);
-     struct Node* currentNode = cmt->table[index].next;
+ struct Node* search(struct CMT* cmt, int key) {
+     //unsigned int index = hash(key, cmt->size);
+     struct Node* currentNode = cmt->table;
+	 struct Node* prevNode;
 
      // 연결 리스트를 순회하며 키에 해당하는 값을 찾음
      while (currentNode != NULL) {
-         if (strcmp(currentNode->key, key) == 0) {
+         if (currentNode->key ==key) {
              return currentNode;
          }
+		 //if ( currentNode == currentNode->next) break;
+
          currentNode = currentNode->next;
      }
      return NULL;
@@ -977,7 +1009,7 @@ void evictOldestEntry(struct dftl *dftl, struct CMT* cmt) {
     // 가장 오래된 엔트리 삭제 + 만약 dirty가 1이면 업데이트 하고 나머지 block들도 copyback 해야됨.. [TODO]
     if (oldest_node != NULL) {
 		if (oldest_node->dirty == 1) {
-			pmt_index = (int)(*(oldest_node->key)/512);
+			pmt_index = (oldest_node->key)/512;
 		    //prev_ppa.g.blk = GTD[pmt_index].vpn/(spp->pgs_per_blk);
 			//prev_ppa.g.pg = GTD[pmt_index].vpn%(spp->pgs_per_blk);
 			//prev_ppa.g.ch = GTD[pmt_index].ch;
@@ -989,15 +1021,14 @@ void evictOldestEntry(struct dftl *dftl, struct CMT* cmt) {
 			GTD[pmt_index].pl = oldest_node->value.pl;
 		}
         prev_node->next = oldest_node->next;
-        vfree(oldest_node->key);
         vfree(oldest_node);
         cmt->current_size--;
     }
 }
 
 // 해시 테이블에 값 삽입 또는 업데이트 (LRU 캐시 교체 정책 포함)
-void insertOrUpdate(struct dftl *dftl, struct CMT* cmt, const char* key, struct Dppn value) {
-    unsigned int index = hash(key, cmt->size);
+void insertOrUpdate(struct dftl *dftl, struct CMT* cmt, int key, struct Dppn value) {
+    //unsigned int index = hash(key, cmt->size);
 	struct Node* newNode;
     // 이미 존재하는 키인 경우 업데이트 수행
     struct Node* existingNode = search(cmt, key);
@@ -1015,31 +1046,56 @@ void insertOrUpdate(struct dftl *dftl, struct CMT* cmt, const char* key, struct 
 
     // 새로운 노드를 생성하여 삽입
     newNode = createNode(key, value, 1, cmt->current_time++);
-    newNode->next = cmt->table[index].next;
-    cmt->table[index].next = newNode;
+    newNode->next = cmt->table[key].next;
+    cmt->table[key].next = newNode;
     cmt->current_size++;
 }
 
 
-static struct Node* findDlpn(struct CMT* cmt, const char* key) {
-    unsigned int index = hash(key, cmt->size);
-    struct Node* currentNode = &(cmt->table[index]);
+static struct Node* lookup_CMT(struct dftl* dftl, int key) {
+    //unsigned int index = hash(key, dftl->cmt->size);
+	struct Node* tmp_node;
+	int hash_val;
 
-    // 연결 리스트를 순회하며 해당 Dlpn을 찾음
-    while (currentNode != NULL) {
-        if (strcmp(currentNode->key, key) == 0) {
-            return currentNode; // Dlpn을 찾은 경우
+	//hash_val = hash_function(key) % dftl->cmt->capacity;
+	tmp_node = dftl->cmt->cmt_bucket[key];
+
+	printk(KERN_INFO "**hj** findDlpn 2 ?? \n");
+
+	while (tmp_node) {
+		if (tmp_node->key == key) {
+			return tmp_node;		
+		}
+		tmp_node = tmp_node->next;
         }
-        currentNode = currentNode->next;
-    }
-
-    return NULL; // Dlpn을 찾지 못한 경우
+	return NULL;
 }
+	
+static int check_CMT(struct dftl* dftl, int key) {
+    //unsigned int index = hash(key, dftl->cmt->size);
+	struct Node* tmp_node = dftl->cmt->cmt_bucket[key];
+	//int hash_val;
 
+	//hash_val = hash_function(key) % (dftl->cmt->capacity);
+	//printk(KERN_INFO "**hj** 22222 2 ?? \n");
+	//tmp_node = dftl->cmt->cmt_bucket[hash_val];
+
+
+	printk(KERN_INFO "**hj** findDlpn 2 ?? \n");
+
+	while (tmp_node) {
+		if (tmp_node->key == key) {
+			return 1;		
+		}
+		tmp_node = tmp_node->next;
+        }
+	return 0;
+
+}
 // DFTL 내부의 CMT에서 Dlpn을 찾는 함수
-static struct Node* lookup_CMT(struct dftl* dftl, const char* key) {
-    return findDlpn(dftl->cmt, key);
-}
+//static struct Node* lookup_CMT(struct dftl* dftl, const char* key) {
+//    return findDlpn(dftl->cmt, key);
+//}
 
 static bool dftl_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvmev_result *ret)
 {
@@ -1059,7 +1115,6 @@ static bool dftl_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 	uint64_t nsecs_completed, nsecs_latest = nsecs_start;
 	uint32_t xfer_size, i, j;
 	uint32_t nr_parts = ns->nr_parts;
-	char *Dlpn;
 	struct CMT *cmt;
 	struct Dppn new_ppa;
 	struct Node* target_node;
@@ -1097,17 +1152,21 @@ static bool dftl_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 			struct ppa cur_ppa;
 
 			local_lpn = lpn / nr_parts;
-			Dlpn = (char *)local_lpn;
+
 			cur_ppa = get_maptbl_ent(dftl, local_lpn);
-			target_node = lookup_CMT(dftl, Dlpn);
-			if (target_node == NULL) {
+			printk(KERN_INFO "**hj** read ,, HERE ?? \n");
+			if (local_lpn != 0) {
+				if (check_CMT(dftl, local_lpn) == 0) {
+				printk(KERN_INFO "**hj** read ,, NULL ?? \n");
 				new_ppa.blk = cur_ppa.g.blk;
 				new_ppa.ch = cur_ppa.g.ch;
 				new_ppa.lun = cur_ppa.g.lun;
 				new_ppa.pg = cur_ppa.g.pg;
 				new_ppa.pl = cur_ppa.g.pl;
 				//insertOrUpdate(dftl,cmt, Dlpn, new_ppa);
-			} else {
+				} else {
+				printk(KERN_INFO "**hj** read ,, FIND ?? \n");
+				target_node = lookup_CMT(dftl, local_lpn);
 				cur_ppa.g.blk = target_node->value.blk;
 				cur_ppa.g.ch = target_node->value.ch;
 				cur_ppa.g.lun = target_node->value.lun;
@@ -1115,8 +1174,10 @@ static bool dftl_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 				cur_ppa.g.pl = target_node->value.pl;
 				//insertOrUpdate(dftl,cmt,Dlpn,new_ppa);
 			}
-			insertOrUpdate(dftl,cmt,Dlpn,new_ppa);
+			}
+			insertOrUpdate(dftl,cmt,local_lpn,new_ppa);
 			printk(KERN_INFO "**hj** dftl_read_1?? \n");
+			
 			//cur_ppa.g.blk = get_maptbl_ent(dftl, local_lpn);
 			if (!mapped_ppa(&cur_ppa) || !valid_ppa(dftl, &cur_ppa)) {
 			//	NVMEV_DEBUG_VERBOSE("lpn 0x%llx not mwnapped to valid ppa\n",local_lpn);
@@ -1174,13 +1235,13 @@ static bool dftl_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 
 // CMT에서 Dlpn을 찾는 함수
 
-void update_cmt(struct dftl *dftl,const char* key,struct ppa ppa,int dirty) {
-    unsigned int index = hash(key, dftl->cmt->size);
+void update_cmt(struct dftl *dftl,int key,struct ppa ppa,int dirty) {
+    //unsigned int index = hash(key, dftl->cmt->size);
 	//struct CMT* cmt = dftl->cmt;
     struct Node* currentNode = dftl->cmt->table;
 
 	while (currentNode != NULL) {
-        if (strcmp(currentNode->key, key) == 0) {
+        if (currentNode->key==  key) {
 			if (dirty == 1) {
 				currentNode->dirty = 1;
 			}
@@ -1252,7 +1313,6 @@ static bool dftl_write(struct nvmev_ns *ns, struct nvmev_request *req, struct nv
 
 		dftl = &dftls[lpn % nr_parts];
 		local_lpn = lpn / nr_parts;
-		Dlpn = (char *)local_lpn;
 
 		ppa = get_maptbl_ent(dftl, local_lpn); // Check whether the given LPN has been written before
 		if (mapped_ppa(&ppa)) {
@@ -1272,8 +1332,8 @@ static bool dftl_write(struct nvmev_ns *ns, struct nvmev_request *req, struct nv
 
 		//lpn_index = lookup_CMT(dftl, Dlpn);
 
-		if (lookup_CMT(dftl, Dlpn) != NULL) {
-			update_cmt(dftl,Dlpn,ppa,1);
+		if (check_CMT(dftl, local_lpn) == 1) {	// CMT에 있으면 업데이트해 시간
+			update_cmt(dftl,local_lpn,ppa,1);
 		}
 
 		mark_page_valid(dftl, &ppa,0);
@@ -1335,14 +1395,17 @@ bool dftl_proc_nvme_io_cmd(struct nvmev_ns *ns, struct nvmev_request *req, struc
 
 	switch (cmd->common.opcode) {
 	case nvme_cmd_write:
+		printk(KERN_INFO "**hj** write?? \n");
 		if (!dftl_write(ns, req, ret))
 			return false;
 		break;
 	case nvme_cmd_read:
+		printk(KERN_INFO "**hj** read?? \n");
 		if (!dftl_read(ns, req, ret))
 			return false;
 		break;
 	case nvme_cmd_flush:
+		printk(KERN_INFO "**hj** flush?? \n");
 		dftl_flush(ns, req, ret);
 		break;
 	default:
